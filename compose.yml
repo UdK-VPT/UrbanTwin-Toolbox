@@ -1,0 +1,44 @@
+name: utt
+
+services:
+  uttdb:
+    container_name: utt-db
+    image: utt/database:local
+    build:
+      context: ./custom-db-docker-image
+      args:
+        CITYDB_IMAGE: 3dcitydb/3dcitydb-pg:5-alpine@sha256:d786d67bc0641cc11c8676c816c4b76da7a769bb47c3c446f67e1be9514010ec
+    restart: unless-stopped
+    ports:
+      - "${UTTDB_POSTGRES_PORT:-5432}:5432"
+    environment:
+      POSTGRES_DB: ${UTTDB_POSTGRES_DB:-uttdb}
+      POSTGRES_USER: ${UTTDB_POSTGRES_USER:-citydb}
+      POSTGRES_PASSWORD: ${UTTDB_POSTGRES_PASSWORD:-citydb}
+      SRID: ${SRID:-25832}
+      HEIGHT_EPSG: ${HEIGHT_EPSG:-}
+      SRS_NAME: ${SRS_NAME:-urn:ogc:def:crs:EPSG::25832}
+      POSTGIS_SFCGAL: "false"
+    volumes:
+      - ./uttdb/data:/var/lib/postgresql
+      - ./uttdb/source-files:/source-files:ro
+      - ./uttdb/init:/uttdb-init:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  pgadmin:
+    container_name: utt-pgadmin
+    image: dpage/pgadmin4@sha256:c332c5f6dfba995d9ebc4af261d93506d6876085d712eaaa3defc8dd1a3f26de
+    restart: unless-stopped
+    ports:
+      - "${PGADMIN_PORT:?PGADMIN_PORT must be set in .env}:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_DEFAULT_EMAIL:?PGADMIN_DEFAULT_EMAIL must be set in .env}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_DEFAULT_PASSWORD:?PGADMIN_DEFAULT_PASSWORD must be set in .env}
+      PGADMIN_CONFIG_SERVER_MODE: "True"
+    volumes:
+      - ./pgadmin/data:/var/lib/pgadmin
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro

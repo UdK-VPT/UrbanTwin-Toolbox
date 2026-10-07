@@ -1,0 +1,8 @@
+# Normalize text to LF on Windows and Linux; detect binary files automatically.
+* text=auto eol=lf
+
+# Scripts need consistent line endings regardless of the developer's Git settings.
+*.sh text eol=lf
+*.ps1 text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf

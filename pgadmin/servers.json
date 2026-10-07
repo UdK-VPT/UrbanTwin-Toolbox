@@ -1,0 +1,13 @@
+{
+  "Servers": {
+    "2": {
+      "Name": "UTTDB",
+      "Group": "UrbanTwin-Toolbox",
+      "Host": "uttdb",
+      "Port": 5432,
+      "MaintenanceDB": "uttdb",
+      "Username": "uttadmin",
+      "SSLMode": "prefer"
+    }
+  }
+}
