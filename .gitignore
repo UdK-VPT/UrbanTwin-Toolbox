@@ -7,6 +7,9 @@
 data/
 /uttdb/source-files/
 
+# Local legacy reference SQL.
+/example/legacy_energymap_berlin_structure.sql
+
 # Windows desktop metadata and editor temporary files.
 Thumbs.db
 Desktop.ini
