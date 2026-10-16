@@ -333,7 +333,85 @@ Group-boundary changes need the complete replacement observation described above
 historical snapshots use the group definitions in effect in their observations,
 not today's grouping. Views can show values alone or selected-source summaries.
 
-## 7. Guarantees and implementation order
+## 7. Metadata topics to consider
+
+These topics remain open for further discussion. They are not approved schema
+extensions or requirements to add more tables. Start with existing registry fields,
+PostgreSQL comments and approved rule documentation where sufficient.
+
+### Disappearance and completeness — priority decision
+
+The meaning of disappearance must be defined before implementing automatic
+withdrawal, deletion or clearing of curated values. Absence alone is not evidence
+that a real-world object ceased to exist. Distinguish at least:
+
+- A complete source inventory no longer contains an object.
+- An incremental delivery omits an object because it has not changed.
+- A selected layer or geographic subset excludes the object.
+- A failed, incomplete or unexpectedly empty import cannot establish absence.
+- An object remains present but a previously supplied attribute becomes NULL or
+  invalid.
+- A source explicitly reports deletion, withdrawal, replacement, splitting or
+  merging of objects.
+
+For each source/rule, decide what constitutes a complete, authoritative observation
+and whether disappearance means fallback to another source, retention of the last
+known value, withdrawal of a group, or retirement of an entity. Distinguish source
+withdrawal from real-world demolition or another valid-time event. Define the
+effective valid time only when supported by the source; detection/import time is
+not automatically valid time.
+
+Also decide how a withdrawal with no replacement is represented in provenance and
+temporal snapshots. Closing `utt_txn` records a change in database knowledge, not by
+itself when an object ceased to exist. The current retain-or-fail behavior remains
+the default until explicit source-specific semantics and their representation are
+agreed. Registry removal is an administrative action, not evidence of object
+deletion.
+
+### Attribute meaning and units
+
+Consider explicit definitions of curated attributes, units, code lists and NULL
+semantics. Include geometry CRS and elevation reference where relevant. Distinguish
+concepts such as building height and roof elevation before treating sources as
+interchangeable candidates. Prefer column comments and existing code lists unless
+machine-readable definitions are needed for validation.
+
+### Quality and uncertainty
+
+Consider measured, estimated and inferred values, source-reported accuracy and
+confidence. Distinguish dataset-level quality from record-specific uncertainty.
+Priority expresses selection preference, not an accuracy guarantee. Do not invent
+confidence values when a source supplies none.
+
+### Object identity and matching
+
+Consider identifier scope and persistence, cross-source identity, and ambiguous
+identifier/spatial matches. Decide whether match method or quality must accompany
+selected contributions. An immutable UTT `row_id` identifies a version; it does not
+prove that records from different sources describe the same real-world object.
+Splits, merges and identifier changes need explicit domain decisions.
+
+### Coverage and delivery semantics
+
+Consider geographic and thematic completeness, full inventories versus incremental
+deliveries, update expectations and meanings of missing values. Unknown,
+unavailable, not applicable and explicitly withdrawn values may require different
+fallback behavior. Bounding extents alone do not establish completeness. These
+decisions underpin the disappearance rules above.
+
+### Responsibility and permitted use
+
+Consider source publisher, internal maintainer and authoritative documentation.
+Preserve published dataset-specific license statements and attribution requirements
+when available, alongside existing fees/access constraints. Do not infer rights
+from missing statements. Publication of derived data may need these distinctions
+later; no new rights-management framework is proposed here.
+
+Future lineage for internal analyses and external tools remains separately deferred
+as stated in the scope. It will need to build on these meanings and identity rules,
+not merely record which processing steps ran.
+
+## 8. Guarantees and implementation order
 
 This design explains which mapping and source records supplied a stored UTT version,
 and records selection changes without unnecessary value versions. It does not
