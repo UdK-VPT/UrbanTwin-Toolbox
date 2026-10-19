@@ -16,3 +16,7 @@ Desktop.ini
 *~
 *.swp
 *.swo
+
+# Local data model review and legacy reference.
+/docs/datamodel_naming.csv
+/example/legacy_energymap_berlin_structure.sql

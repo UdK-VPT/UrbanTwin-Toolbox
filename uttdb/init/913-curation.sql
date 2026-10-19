@@ -30,7 +30,7 @@ BEGIN
     INTO STRICT source_city FROM mirror."alkis:land_stored";
 
   SELECT * INTO current_city FROM utt.city
-  WHERE id = source_city.id AND upper_inf(utt_txn);
+  WHERE city_id_official = source_city.id AND upper_inf(utt_txn);
   IF FOUND THEN
     IF current_city.source_valid IS NULL THEN
       RAISE EXCEPTION 'Current city % has no source-valid range.', source_city.id;
@@ -59,7 +59,7 @@ BEGIN
     recorded_at := clock_timestamp();
   END IF;
 
-  INSERT INTO utt.city (id, name, geom, source_valid, utt_txn)
+  INSERT INTO utt.city (city_id_official, name, geom, source_valid, utt_txn)
   VALUES (source_city.id, source_city.name, source_city.geom,
           tstzrange(validity_start, NULL, '[)'),
           tstzrange(recorded_at, NULL, '[)'));
@@ -71,7 +71,7 @@ REVOKE ALL ON FUNCTION utt_pkg.curate_city()
   FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT EXECUTE ON FUNCTION utt_pkg.curate_city() TO uttdb_dba, uttdb_pipeline;
 COMMENT ON FUNCTION utt_pkg.curate_city() IS
-  'DBA/pipeline invoker-security curation of Berlin from mirror."alkis:land_stored" into utt.city: lan becomes the stable id, namlan becomes name, geometry retains its source CRS, and each version receives an internal row_id. Requires exactly one source row and a successfully imported registry entry with a finite source_revision_at. No temporal input is accepted from the caller. The first import opens source_valid at the source revision and utt_txn at insertion. Name or geometry changes close the current utt_txn and insert a new version; a newer revision also closes source_valid at that revision, while unchanged revision metadata is retained for content-only corrections. A revision change without a content change returns 0 and leaves the current version untouched. An insert or content change returns 1; a content change with an older revision raises an error. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_city();';
+  'DBA/pipeline invoker-security curation of Berlin from mirror."alkis:land_stored" into utt.city: lan becomes the stable city_id_official, namlan becomes name, geometry retains its source CRS, and each version receives an internal row_id. Requires exactly one source row and a successfully imported registry entry with a finite source_revision_at. No temporal input is accepted from the caller. The first import opens source_valid at the source revision and utt_txn at insertion. Name or geometry changes close the current utt_txn and insert a new version; a newer revision also closes source_valid at that revision, while unchanged revision metadata is retained for content-only corrections. A revision change without a content change returns 0 and leaves the current version untouched. An insert or content change returns 1; a content change with an older revision raises an error. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_city();';
 
 -- ALKIS district has no feature validity date; use its source-reported revision.
 CREATE FUNCTION utt_pkg.curate_district()
@@ -123,7 +123,7 @@ BEGIN
     ORDER BY name::bigint
   LOOP
     SELECT * INTO current_district FROM utt.district
-    WHERE dist_id = source_district.dist_id AND upper_inf(utt_txn);
+    WHERE district_id_official = source_district.dist_id AND upper_inf(utt_txn);
 
     IF FOUND THEN
       IF current_district.source_valid IS NULL THEN
@@ -149,7 +149,7 @@ BEGIN
       WHERE row_id = current_district.row_id;
     END IF;
 
-    INSERT INTO utt.district (dist_id, name, geom, source_valid, utt_txn)
+    INSERT INTO utt.district (district_id_official, name, geom, source_valid, utt_txn)
     VALUES (source_district.dist_id, source_district.name, source_district.geom,
             tstzrange(validity_start, NULL, '[)'),
             tstzrange(recorded_at, NULL, '[)'));
@@ -164,7 +164,7 @@ REVOKE ALL ON FUNCTION utt_pkg.curate_district()
   FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT EXECUTE ON FUNCTION utt_pkg.curate_district() TO uttdb_dba, uttdb_pipeline;
 COMMENT ON FUNCTION utt_pkg.curate_district() IS
-  'DBA/pipeline invoker-security curation of Berlin districts from mirror."alkis:bezirk_stored" into utt.district: numeric source name becomes the stable dist_id, namgem becomes name, geometry retains its source CRS, and each version receives an internal row_id. Requires a successfully imported registry entry with a finite source_revision_at. No temporal input is accepted from the caller. The first import opens source_valid at the source revision and utt_txn at insertion. Name or geometry changes create versions under the shared temporal curation model; a revision change without a content change leaves the current version untouched. Returns the number of inserted district versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_district();';
+  'DBA/pipeline invoker-security curation of Berlin districts from mirror."alkis:bezirk_stored" into utt.district: numeric source name becomes the stable district_id_official, namgem becomes name, geometry retains its source CRS, and each version receives an internal row_id. Requires a successfully imported registry entry with a finite source_revision_at. No temporal input is accepted from the caller. The first import opens source_valid at the source revision and utt_txn at insertion. Name or geometry changes create versions under the shared temporal curation model; a revision change without a content change leaves the current version untouched. Returns the number of inserted district versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_district();';
 
 -- The ALKIS building layer has no feature validity date; use its source-reported revision.
 CREATE FUNCTION utt_pkg.curate_building()
@@ -222,7 +222,7 @@ BEGIN
     ORDER BY uuid
   LOOP
     SELECT * INTO current_building FROM utt.building
-    WHERE uuid = source_building.uuid AND upper_inf(utt_txn);
+    WHERE building_id_official = source_building.uuid AND upper_inf(utt_txn);
 
     IF FOUND THEN
       IF current_building.source_valid IS NULL THEN
@@ -231,26 +231,26 @@ BEGIN
 
       content_changed :=
         public.ST_AsEWKB(current_building.geom) IS DISTINCT FROM public.ST_AsEWKB(source_building.geom)
-        OR current_building.gfk IS DISTINCT FROM source_building.gfk
-        OR current_building.bezgfk IS DISTINCT FROM source_building.bezgfk
-        OR current_building.ofl IS DISTINCT FROM source_building.ofl
-        OR current_building.bezofl IS DISTINCT FROM source_building.bezofl
-        OR current_building.aog IS DISTINCT FROM source_building.aog
-        OR current_building.aug IS DISTINCT FROM source_building.aug
-        OR current_building.hoh IS DISTINCT FROM source_building.hoh
-        OR current_building.bat IS DISTINCT FROM source_building.bat
-        OR current_building.bezbat IS DISTINCT FROM source_building.bezbat
-        OR current_building.nam IS DISTINCT FROM source_building.nam
-        OR current_building.baw IS DISTINCT FROM source_building.baw
-        OR current_building.bezbaw IS DISTINCT FROM source_building.bezbaw
-        OR current_building.zus IS DISTINCT FROM source_building.zus
-        OR current_building.bezzus IS DISTINCT FROM source_building.bezzus
-        OR current_building.lag IS DISTINCT FROM source_building.lag
-        OR current_building.namlag IS DISTINCT FROM source_building.namlag
-        OR current_building.hnr IS DISTINCT FROM source_building.hnr
-        OR current_building.pnr IS DISTINCT FROM source_building.pnr
-        OR current_building.lnr IS DISTINCT FROM source_building.lnr
-        OR current_building.bezeich IS DISTINCT FROM source_building.bezeich;
+        OR current_building.building_function IS DISTINCT FROM source_building.gfk
+        OR current_building.building_function_description IS DISTINCT FROM source_building.bezgfk
+        OR current_building.position_relative_to_ground IS DISTINCT FROM source_building.ofl
+        OR current_building.position_relative_to_ground_description IS DISTINCT FROM source_building.bezofl
+        OR current_building.storeys_above_ground IS DISTINCT FROM source_building.aog
+        OR current_building.storeys_below_ground IS DISTINCT FROM source_building.aug
+        OR current_building.highrise IS DISTINCT FROM source_building.hoh
+        OR current_building.building_component_type IS DISTINCT FROM source_building.bat
+        OR current_building.building_component_type_description IS DISTINCT FROM source_building.bezbat
+        OR current_building.name IS DISTINCT FROM source_building.nam
+        OR current_building.building_configuration IS DISTINCT FROM source_building.baw
+        OR current_building.building_configuration_description IS DISTINCT FROM source_building.bezbaw
+        OR current_building.building_condition IS DISTINCT FROM source_building.zus
+        OR current_building.building_condition_description IS DISTINCT FROM source_building.bezzus
+        OR current_building.street_code IS DISTINCT FROM source_building.lag
+        OR current_building.street_name IS DISTINCT FROM source_building.namlag
+        OR current_building.house_number IS DISTINCT FROM source_building.hnr
+        OR current_building.pseudo_house_number IS DISTINCT FROM source_building.pnr
+        OR current_building.building_association_number IS DISTINCT FROM source_building.lnr
+        OR current_building.aaa_description IS DISTINCT FROM source_building.bezeich;
       IF NOT content_changed THEN
         CONTINUE;
       END IF;
@@ -269,9 +269,9 @@ BEGIN
     END IF;
 
     INSERT INTO utt.building (
-      fid, uuid, geom, gfk, bezgfk, ofl, bezofl, aog, aug, hoh,
-      bat, bezbat, nam, baw, bezbaw, zus, bezzus, lag, namlag,
-      hnr, pnr, lnr, bezeich, source_valid, utt_txn
+      source_fid, building_id_official, geom, building_function, building_function_description, position_relative_to_ground, position_relative_to_ground_description, storeys_above_ground, storeys_below_ground, highrise,
+      building_component_type, building_component_type_description, name, building_configuration, building_configuration_description, building_condition, building_condition_description, street_code, street_name,
+      house_number, pseudo_house_number, building_association_number, aaa_description, source_valid, utt_txn
     ) VALUES (
       source_building.fid, source_building.uuid, source_building.geom,
       source_building.gfk, source_building.bezgfk, source_building.ofl,
@@ -295,7 +295,7 @@ REVOKE ALL ON FUNCTION utt_pkg.curate_building()
   FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT EXECUTE ON FUNCTION utt_pkg.curate_building() TO uttdb_dba, uttdb_pipeline;
 COMMENT ON FUNCTION utt_pkg.curate_building() IS
-  'DBA/pipeline invoker-security curation of Berlin ALKIS buildings from mirror."alkis_gebaeude:gebaeude_stored" into utt.building. Source uuid is the stable building ID; fid is retained as technical source metadata but does not trigger versions. Geometry and the directly mapped ALKIS descriptive attributes gfk, bezgfk, ofl, bezofl, aog, aug, hoh, bat, bezbat, nam, baw, bezbaw, zus, bezzus, lag, namlag, hnr, pnr, lnr and bezeich define content. The exact registry source_revision_at opens source_valid because the layer has no feature validity date. Content changes create versions under the shared temporal model; a revision or fid change alone creates no version. Derived classification, heritage, height and energy fields remain NULL. Returns the number of inserted versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_building();';
+  'DBA/pipeline invoker-security curation of Berlin ALKIS buildings from mirror."alkis_gebaeude:gebaeude_stored" into utt.building. Source uuid supplies building_id_official; source fid is retained as technical source metadata in source_fid but does not trigger versions. Geometry and the directly mapped ALKIS descriptive attributes gfk, bezgfk, ofl, bezofl, aog, aug, hoh, bat, bezbat, nam, baw, bezbaw, zus, bezzus, lag, namlag, hnr, pnr, lnr and bezeich define content. The exact registry source_revision_at opens source_valid because the layer has no feature validity date. Content changes create versions under the shared temporal model; a revision or fid change alone creates no version. Derived classification, heritage, height and energy fields remain NULL. Returns the number of inserted versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_building();';
 
 CREATE FUNCTION utt_pkg.curate_block()
 RETURNS integer
@@ -350,7 +350,7 @@ BEGIN
     ORDER BY blknr::bigint
   LOOP
     SELECT * INTO current_block FROM utt.block
-    WHERE blk_id = source_block.blk_id AND upper_inf(utt_txn);
+    WHERE block_id_official = source_block.blk_id AND upper_inf(utt_txn);
 
     IF FOUND THEN
       IF current_block.source_valid IS NULL THEN
@@ -358,7 +358,7 @@ BEGIN
       END IF;
 
       content_changed := current_block.planning_area_no IS DISTINCT FROM source_block.planning_area_no
-        OR current_block.in_district IS DISTINCT FROM source_block.in_district
+        OR current_block.mostly_district_id_official IS DISTINCT FROM source_block.in_district
         OR public.ST_AsEWKB(current_block.geom) IS DISTINCT FROM public.ST_AsEWKB(source_block.geom)
         OR public.ST_AsEWKB(current_block.centroid) IS DISTINCT FROM public.ST_AsEWKB(source_block.centroid);
       IF NOT content_changed THEN
@@ -379,7 +379,7 @@ BEGIN
     END IF;
 
     INSERT INTO utt.block (
-      blk_id, geom, planning_area_no, in_district, centroid, source_valid, utt_txn
+      block_id_official, geom, planning_area_no, mostly_district_id_official, centroid, source_valid, utt_txn
     ) VALUES (
       source_block.blk_id, source_block.geom, source_block.planning_area_no,
       source_block.in_district, source_block.centroid,
@@ -397,7 +397,7 @@ REVOKE ALL ON FUNCTION utt_pkg.curate_block()
   FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT EXECUTE ON FUNCTION utt_pkg.curate_block() TO uttdb_dba, uttdb_pipeline;
 COMMENT ON FUNCTION utt_pkg.curate_block() IS
-  'DBA/pipeline invoker-security curation of Berlin statistical blocks from mirror."bloecke:rbs_bloecke_stored" into utt.block: numeric blknr becomes stable blk_id, plr becomes planning_area_no, bez becomes the long Berlin district ID, datum starts source_valid at midnight UTC, and geometry retains its source CRS. Centroid is the geometric centroid when covered by the block, otherwise ST_PointOnSurface provides an interior representative point. Requires a successfully imported registry entry. No temporal input is accepted from the caller. Geometry, derived centroid, planning area or district changes create versions under the shared temporal curation model; a changed datum without a content change leaves the current version untouched. Other block attributes are not curated and remain NULL. Returns the number of inserted block versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_block();';
+  'DBA/pipeline invoker-security curation of Berlin statistical blocks from mirror."bloecke:rbs_bloecke_stored" into utt.block: numeric blknr becomes stable block_id_official, plr becomes planning_area_no, bez becomes the long Berlin district ID, datum starts source_valid at midnight UTC, and geometry retains its source CRS. Centroid is the geometric centroid when covered by the block, otherwise ST_PointOnSurface provides an interior representative point. Requires a successfully imported registry entry. No temporal input is accepted from the caller. Geometry, derived centroid, planning area or district changes create versions under the shared temporal curation model; a changed datum without a content change leaves the current version untouched. Returns the number of inserted block versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_block();';
 
 CREATE FUNCTION utt_pkg.curate_plot()
 RETURNS integer
@@ -453,7 +453,7 @@ BEGIN
     ORDER BY rtrim(fsko, '_')::bigint
   LOOP
     SELECT * INTO current_plot FROM utt.plot
-    WHERE fsko = source_plot.fsko AND upper_inf(utt_txn);
+    WHERE plot_id_official = source_plot.fsko AND upper_inf(utt_txn);
 
     IF FOUND THEN
       IF current_plot.source_valid IS NULL THEN
@@ -462,10 +462,10 @@ BEGIN
 
       content_changed :=
         public.ST_AsEWKB(current_plot.geom) IS DISTINCT FROM public.ST_AsEWKB(source_plot.geom)
-        OR current_plot.zae IS DISTINCT FROM source_plot.zae
-        OR current_plot.gmk IS DISTINCT FROM source_plot.gmk
-        OR current_plot.fln IS DISTINCT FROM source_plot.fln
-        OR current_plot.in_district IS DISTINCT FROM source_plot.in_district;
+        OR current_plot.parcel_number_numerator IS DISTINCT FROM source_plot.zae
+        OR current_plot.cadastral_district_code IS DISTINCT FROM source_plot.gmk
+        OR current_plot.cadastral_field_number IS DISTINCT FROM source_plot.fln
+        OR current_plot.district_id_official IS DISTINCT FROM source_plot.in_district;
       IF NOT content_changed THEN
         CONTINUE;
       END IF;
@@ -485,7 +485,7 @@ BEGIN
     END IF;
 
     INSERT INTO utt.plot (
-      fsko, geom, zae, gmk, fln, in_district, source_valid, utt_txn
+      plot_id_official, geom, parcel_number_numerator, cadastral_district_code, cadastral_field_number, district_id_official, source_valid, utt_txn
     ) VALUES (
       source_plot.fsko, source_plot.geom, source_plot.zae, source_plot.gmk,
       source_plot.fln, source_plot.in_district,
@@ -503,7 +503,7 @@ REVOKE ALL ON FUNCTION utt_pkg.curate_plot()
   FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT EXECUTE ON FUNCTION utt_pkg.curate_plot() TO uttdb_dba, uttdb_pipeline;
 COMMENT ON FUNCTION utt_pkg.curate_plot() IS
-  'DBA/pipeline invoker-security curation of Berlin cadastral plots from mirror."alkis:flurstuecke_stored" into utt.plot. The numeric portion of fsko becomes the stable plot ID; trailing source padding is removed. Geometry, zae, gmk, fln and district code gdz are copied, and beg starts source_valid at midnight UTC. Geometry or mapped cadastral changes create versions under the shared temporal model; changed beg alone creates no version. Other enrichment fields remain NULL. Returns the number of inserted versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_plot();';
+  'DBA/pipeline invoker-security curation of Berlin cadastral plots from mirror."alkis:flurstuecke_stored" into utt.plot. The numeric portion of fsko becomes the stable plot_id_official; trailing source padding is removed. Geometry, zae, gmk, fln and district code gdz are copied, and beg starts source_valid at midnight UTC. Geometry or mapped cadastral changes create versions under the shared temporal model; changed beg alone creates no version. Returns the number of inserted versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_plot();';
 
 CREATE FUNCTION utt_pkg.curate_address()
 RETURNS integer
@@ -564,14 +564,13 @@ BEGIN
            bez_name AS district_name, ot AS place_id,
            ot_name AS place_name, plr::bigint AS planning_area_no,
            plr_name AS planning_area_name, aufn_dt::timestamp AS address_date,
-           NULL::timestamp AS street_date, NULL::varchar AS quality,
-           str_typ AS type, NULL::varchar AS hko_id,
+           str_typ AS type,
            aufn_dt::timestamp AT TIME ZONE 'UTC' AS validity_start
     FROM mirror."adressen_rbs:adressen_rbs_stored"
     ORDER BY adr_ident::bigint
   LOOP
     SELECT * INTO current_address FROM utt.address
-    WHERE address_id = source_address.address_id AND upper_inf(utt_txn);
+    WHERE address_id_official = source_address.address_id AND upper_inf(utt_txn);
 
     IF FOUND THEN
       IF current_address.source_valid IS NULL THEN
@@ -582,19 +581,17 @@ BEGIN
         public.ST_AsEWKB(current_address.geom) IS DISTINCT FROM public.ST_AsEWKB(source_address.geom)
         OR current_address.street_name IS DISTINCT FROM source_address.street_name
         OR current_address.street_id IS DISTINCT FROM source_address.street_id
-        OR current_address.house_no IS DISTINCT FROM source_address.house_no
-        OR current_address.house_no_suffix IS DISTINCT FROM source_address.house_no_suffix
+        OR current_address.house_number IS DISTINCT FROM source_address.house_no
+        OR current_address.house_number_suffix IS DISTINCT FROM source_address.house_no_suffix
         OR current_address.pca_id IS DISTINCT FROM source_address.pca_id
-        OR current_address.blk_id IS DISTINCT FROM source_address.blk_id
-        OR current_address.district_id IS DISTINCT FROM source_address.district_id
+        OR current_address.block_id_official IS DISTINCT FROM source_address.blk_id
+        OR current_address.district_id_official IS DISTINCT FROM source_address.district_id
         OR current_address.district_name IS DISTINCT FROM source_address.district_name
         OR current_address.place_id IS DISTINCT FROM source_address.place_id
         OR current_address.place_name IS DISTINCT FROM source_address.place_name
         OR current_address.planning_area_no IS DISTINCT FROM source_address.planning_area_no
         OR current_address.planning_area_name IS DISTINCT FROM source_address.planning_area_name
-        OR current_address.quality IS DISTINCT FROM source_address.quality
-        OR current_address.type IS DISTINCT FROM source_address.type
-        OR current_address.hko_id IS DISTINCT FROM source_address.hko_id;
+        OR current_address.type IS DISTINCT FROM source_address.type;
       IF NOT content_changed THEN
         CONTINUE;
       END IF;
@@ -614,18 +611,18 @@ BEGIN
     END IF;
 
     INSERT INTO utt.address (
-      address_id, geom, street_name, street_id, house_no, house_no_suffix,
-      pca_id, blk_id, district_id, district_name, place_id, place_name,
-      planning_area_no, planning_area_name, address_date, street_date,
-      quality, type, hko_id, source_valid, utt_txn
+      address_id_official, geom, street_name, street_id, house_number, house_number_suffix,
+      pca_id, block_id_official, district_id_official, district_name, place_id, place_name,
+      planning_area_no, planning_area_name, address_date,
+      type, source_valid, utt_txn
     ) VALUES (
       source_address.address_id, source_address.geom, source_address.street_name,
       source_address.street_id, source_address.house_no, source_address.house_no_suffix,
       source_address.pca_id, source_address.blk_id, source_address.district_id,
       source_address.district_name, source_address.place_id, source_address.place_name,
       source_address.planning_area_no, source_address.planning_area_name,
-      source_address.address_date, source_address.street_date, source_address.quality,
-      source_address.type, source_address.hko_id,
+      source_address.address_date,
+      source_address.type,
       tstzrange(source_address.validity_start, NULL, '[)'),
       tstzrange(recorded_at, NULL, '[)')
     );
@@ -640,7 +637,7 @@ REVOKE ALL ON FUNCTION utt_pkg.curate_address()
   FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT EXECUTE ON FUNCTION utt_pkg.curate_address() TO uttdb_dba, uttdb_pipeline;
 COMMENT ON FUNCTION utt_pkg.curate_address() IS
-  'DBA/pipeline invoker-security curation of Berlin RBS address records from mirror."adressen_rbs:adressen_rbs_stored" into utt.address. Numeric adr_ident is the stable address_id; source address and location fields are copied; str_typ becomes type; bez is expanded to the long Berlin district ID; aufn_dt starts source_valid at midnight UTC. Geometry or mapped descriptive/location changes create versions under the shared temporal model; changed aufn_dt alone creates no version. This routine leaves street_date, quality, hko_id, bldg_fid, fsko, ens_id and bldg_uuid NULL. Returns the number of inserted versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_address();';
+  'DBA/pipeline invoker-security curation of Berlin RBS address records from mirror."adressen_rbs:adressen_rbs_stored" into utt.address. Numeric adr_ident is the stable address_id_official; source address and location fields are copied; str_typ becomes type; bez is expanded to the long Berlin district ID; aufn_dt starts source_valid at midnight UTC. Geometry or mapped descriptive/location changes create versions under the shared temporal model; changed aufn_dt alone creates no version. This routine leaves building_id_official and plot_id_official NULL. Returns the number of inserted versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_address();';
 
 CREATE FUNCTION utt_pkg.curate_relation(relation_name text)
 RETURNS integer
