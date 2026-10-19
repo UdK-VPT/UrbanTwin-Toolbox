@@ -2,15 +2,15 @@
 
 Definitions for the requested [metadata model, ver03](metadata_modelling_ver03.md).
 These terms describe the target design; they do not imply that every feature is
-already implemented. The six sections group the main concepts and their vocabulary.
+already implemented. The five sections group the main concepts and their vocabulary.
 
 ## 1. Source registration and ingestion
 
 | Term | Definition |
 |---|---|
 | Source registration and ingestion | Identifying a dataset, reading it into staging, checking it and publishing accepted changes into persistent history. |
-| Dataset / layer | An identifiable collection of records with a defined structure and scope. A service may expose several separately registered layers. Research outputs can also be datasets. |
-| Source | The origin supplying a dataset, such as a WFS service, file or research tool. |
+| Dataset / layer | An identifiable collection of records with a defined structure and scope. A service may expose several separately registered layers. |
+| Source | The origin supplying a dataset, such as a WFS service or file. |
 | Registry (`mirror.registry`) | Metadata describing registered datasets: identity, origin, access, coverage, ownership and related information. It does not store the dataset's feature rows. |
 | Metadata | Information describing data, its meaning, origin, structure or handling, rather than the feature values themselves. |
 | Foreign table | A PostgreSQL interface for reading externally held data without first copying it into a normal local table. |
@@ -26,6 +26,9 @@ already implemented. The six sections group the main concepts and their vocabula
 | Complete snapshot | A delivery containing all records within a declared scope. Missing records establish withdrawal only when that scope is also authoritative and verified. |
 | Delta delivery | A delivery containing declared changes rather than a complete inventory. Omission alone does not mean deletion. |
 | Coverage | The geographic and thematic scope represented by a dataset or delivery. A bounding extent does not prove completeness. |
+| Import lifecycle (`mirror.import`) | One record per ingestion attempt, moving from staging to acceptance or rejection; failures can be recorded for diagnostics. It combines pending metadata and accepted history. Accepted rows become immutable. |
+| Accepted-import history | The accepted subset of `mirror.import`, including successful no-op imports, acceptance time and reliably associated source revision. |
+| Staging metadata | Pending snapshot evidence, validation results and manual-review state in `mirror.import`, separate from source columns in `_staging`. |
 | Accepted import (`import_id`) | An immutable record identifying a successful acceptance, its time, dataset, schema and coverage evidence. It can exist even when no feature changed. |
 | Import time (`imported_at`) | The time of successful local publication; on the registry, it may summarize the latest accepted import. |
 | Accepted source revision (`data_revision_at`) | A source-reported revision reliably associated with the accepted data. It is NULL when that association is unknown. |
@@ -37,16 +40,15 @@ already implemented. The six sections group the main concepts and their vocabula
 
 | Term | Definition |
 |---|---|
-| Temporal model and versioning | Rules for retaining successive data states and describing when they were known or valid. |
+| Temporal model and versioning | Rules for retaining successive data states and describing when UTT considered them current. |
 | Stable object key | A repeatable identifier for a logical object across versions. Its uniqueness is scoped to its dataset; it does not automatically match objects across sources. |
 | Logical object | The continuing identity represented by successive stored versions, such as one building identified by a stable source key. |
 | Version (`row_id`) | One stored state with an immutable identity. A changed object receives a new version; its previous row remains in history. |
 | Stored history (`_stored`) | The persistent table containing source columns plus version metadata: `row_id`, `utt_txn`, creating `import_id` and optionally a content hash. |
 | System time (`utt_txn`) | The interval during which UTT considered a stored version current. It describes database knowledge, not necessarily real-world validity. |
-| Valid time (`source_valid`) | An optional interval describing when a domain state applies according to source evidence or a documented approximation. Unknown validity remains NULL. |
-| Bitemporal model | A model using both system time and valid time to distinguish what UTT knew from when the described condition applied. |
+| Source date attribute | A date or timestamp supplied in a source row, preserved and compared like any other attribute. Its meaning comes from the source; it is not a second UTT-managed time axis. |
 | Timestamp | One instant. An import or provenance observation can have a timestamp without introducing another temporal axis. |
-| Time range (`tstzrange`) | A PostgreSQL interval between timestamp bounds; the type used for `utt_txn` and `source_valid`. |
+| Time range (`tstzrange`) | A PostgreSQL interval between timestamp bounds; the type used for the single UTT-managed axis, `utt_txn`. |
 | Half-open range (`[start, end)`) | A range including its start and excluding its end. Adjacent versions can share a boundary without overlapping. |
 | Open-ended version | A version with no upper system-time bound, selected by `upper_inf(utt_txn)`. |
 | Version closure | Setting the upper system-time bound of an existing version. Replacement opens a new version at that same instant; closure does not erase the old row. |
@@ -54,7 +56,7 @@ already implemented. The six sections group the main concepts and their vocabula
 | Observed history | States actually accepted by UTT. It does not reconstruct changes that occurred between observations. |
 | Withdrawal | Removal from the accepted current source state under explicit delivery rules. It does not by itself prove real-world demolition or cessation. |
 | Retirement | Ending active use of a registration or entity under explicit rules while retaining required historical identities and references. |
-| Content-based idempotency | Reprocessing the same state creates no additional data versions. For domain curation, date-only or provenance-only changes also leave entity versions unchanged. |
+| Content-based idempotency | Reprocessing the same state creates no additional data versions. Changed source date attributes count as content changes when managed by the mapping; import metadata or provenance alone do not version entities. |
 | Content hash | An optional deterministic fingerprint of complete state used for comparison. It excludes UTT-generated metadata. |
 
 ## 3. Domain curation and mappings
@@ -89,32 +91,20 @@ already implemented. The six sections group the main concepts and their vocabula
 | Replacement observation | A new observation containing the entire selected contributor set for a group, so removed contributors do not appear to remain selected. Earlier observations remain in history. |
 | Historical provenance | The selected origins known at a requested system time, using the target version and latest applicable observation then, rather than today's mapping activation. |
 
-## 5. Research runs and lineage
+## 5. Current and historical data access
 
 | Term | Definition |
 |---|---|
-| Research runs and lineage | Recording executions and their exact inputs so generated datasets can be traced to the data and methods that produced them. |
-| Research dataset | Registered outputs of a calculation, simulation or manual research contribution, ingested through the common versioning path. |
-| Run (`run_id`) | One execution with its tool/model version, time/status, parameters, tags, comments and appropriate authorship. |
-| Scenario | A defined set of modelled conditions, such as a 2050 case. Distinct scenarios coexist rather than automatically replacing one another. |
-| Parameter set | Configuration values for a run, stored once at run level rather than repeated in every output row. |
-| Model/code version | An immutable identifier for the method executed, such as a code commit, allowing runs to distinguish changed behavior. |
-| Run input | A durable reference to the accepted dataset state or exact versions read, including selection/query, scope and role. |
-| Lineage | The chain connecting outputs to runs, exact input states and versioned methods. Group provenance describes the selected origins of curated values within this broader chain. |
-| Reproducibility | The ability to reconstruct inputs and methods sufficiently to repeat or inspect a result. Logical data reconstruction does not guarantee byte-exact recovery of original files. |
-
-## 6. Current and historical data access
-
-| Term | Definition |
-|---|---|
-| Current and historical data access | Interfaces for reading accepted current state, earlier database knowledge and, where available, real-world valid state. |
+| Current and historical data access | Interfaces for reading accepted current state, earlier database knowledge. |
 | Current state | Versions with an unbounded `utt_txn` end. They represent current database knowledge, not necessarily conditions valid today. |
 | Current-state view | A normal, read-only, non-materialized query over `_stored` selecting current source rows. It stores no duplicate dataset and reflects committed acceptances automatically. |
 | Historical / as-of query | A query selecting versions whose system-time range contains a requested instant. |
-| Bitemporal query | A query selecting versions at both a system-time instant and a valid-time instant. Strict valid-time queries exclude unknown validity. |
 | Materialization | A deliberately stored copy of query results for performance. The normal current-state view is not materialized; exceptional caches must be explicit and rebuildable. |
 | Atomic transaction | A unit of database work whose changes commit together or roll back together, keeping accepted data and metadata consistent. |
 | Publication locking | Coordination that prevents competing publications or readers from combining incompatible accepted data and metadata. |
 | Privilege boundary | Database permissions controlling who may inspect or modify data. Everyday views and historical tables are protected against uncontrolled writes. |
 | Interoperability | Exchange with other representations or systems, including CityGML/3DCityDB, without requiring every dataset to adopt that representation. |
 
+
+Our own analysis outputs could later be handled as registered sources. Research
+execution metadata and additional input lineage are deferred from the current scope.

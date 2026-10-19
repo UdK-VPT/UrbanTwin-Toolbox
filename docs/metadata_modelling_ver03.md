@@ -1,4 +1,4 @@
-# UTT metadata model: observed history, domain curation and lineage
+# UTT metadata model: source history, domain curation and provenance
 
 **Status:** Requested target design, combining [ver01](metadata_modelling_ver01.md)
 and [ver02](metadata_modelling_ver02.md). This document specifies required changes
@@ -18,8 +18,10 @@ It does not require every source to fit one universal city model before becoming
 useful. Building energy is the initial curated domain; further domain models need
 a concrete application and maintainers who understand their meaning.
 
-External sources and internal research results use the same versioned ingestion
-path. Preserve original attributes and geometry, then harmonize only where needed.
+The current scope is ingestion and history for external sources, plus optional
+domain curation. Preserve original attributes and geometry, then harmonize only
+where needed. Our own analysis outputs could later be registered and handled like
+external sources; any additional execution or input-lineage metadata is deferred.
 Keep processing primarily in PostgreSQL/PostGIS, with readable SQL and small
 metadata structures. CityGML/3DCityDB remains an interoperability interface for
 suitable data, rather than a compulsory copy of every research attribute.
@@ -29,7 +31,6 @@ flowchart TD
     G[Register dataset in mirror.registry] --> F[Foreign table or source adapter]
     E[External dataset] --> F
     F --> S[Temporarily cached _staging snapshot]
-    R[Research result dataset] --> S
     S --> B[Compare stable keys and source state with current stored versions]
     B --> A{Validation and threshold checks}
     A -->|Pass and no manual review requested| V[(Versioned _stored table)]
@@ -45,8 +46,6 @@ flowchart TD
     D --> P[Selected-contribution provenance]
     U --> X[Applications and CityGML exchange]
     V --> X
-    L[Runs and exact input references] --- R
-    L --- D
 ```
 
 Store one physical version table per registered dataset/layer. A current view
@@ -59,7 +58,7 @@ For each registered layer, the required ingestion sequence is:
 
 1. Register its identity and source access in `mirror.registry`.
 2. Expose the original source through a read-only foreign table where supported.
-   File/raster and generated datasets may use a source adapter instead; they follow
+   File/raster sources may use a source adapter instead; they follow
    the same staging and acceptance contract.
 3. Cache the incoming source in `mirror.<layer>_staging`, preserving the columns,
    types and values exposed by that source interface, including geometry. Do not
@@ -90,8 +89,7 @@ Expose current source data through a normal, non-materialized, read-only view ov
 `_stored`, selecting the source columns where `upper_inf(utt_txn)`. The view adds
 no stored copy and reflects each committed acceptance automatically. Technical
 version metadata remains available from `_stored` for history and lineage queries.
-Manual
-acceptance publishes the inspected staging contents, without fetching the source
+Manual acceptance publishes the inspected staging contents, without fetching the source
 again. Serialize publication per dataset and validate or recompute its change set
 against the then-current `_stored` state before writing, so a delayed acceptance
 cannot apply an outdated comparison.
@@ -112,7 +110,7 @@ source when its identity changes. Historical references remain usable.
 
 | Record | Responsibility |
 |---|---|
-| Dataset registry | Identity, external/generated origin, location, table/view, coverage, ownership, update configuration and published metadata |
+| Dataset registry | Identity, source origin, location, table/view, coverage, ownership, update configuration and published metadata |
 | Accepted import | Immutable `import_id`, dataset, acceptance time, reliably associated revision or NULL, coverage/completeness and schema revision |
 | Feature version | Immutable version identity, stable source-scoped key, original state, `utt_txn`, creating `import_id` and optional content hash |
 | Schema revision | Meaning and structure needed to interpret the accepted historical rows |
@@ -122,7 +120,7 @@ source when its identity changes. Historical references remain usable.
 never merely the latest advertised revision. Capture revision evidence with the
 cached staging snapshot and validate it during delayed acceptance. If the association
 cannot be established, store NULL; a later metadata response cannot establish it.
-Registration time may be retained for operations, but is not valid time.
+Registration time may be retained for operations; it does not date real-world changes.
 
 Acceptance compares stable keys and all source state, including geometry. Insert
 new objects, close and replace changed versions, and leave unchanged versions
@@ -151,42 +149,41 @@ History begins at the first accepted observation; it cannot recover unseen remot
 changes. Logical state reconstruction is the goal; byte-exact reproduction also
 requires an optional original-file/snapshot archive.
 
-## 3. Time: two meanings, no hidden extra axes
+## 3. Time: one UTT-managed axis
 
-| Value | Meaning |
-|---|---|
-| Stable object key | Logical identity repeated across versions, scoped to its dataset |
-| Version `row_id` | Immutable identity of one stored version |
-| `utt_txn tstzrange` | Mandatory system time: when UTT considered the version current |
-| `source_valid tstzrange` | Optional domain valid time: when the source says the state applies |
-| Import/revision/observation timestamps | Events or evidence, not additional validity axes |
-| Scenario year | A modelled condition, not automatically valid time or system time |
+Use `utt_txn tstzrange` as the only general temporal axis for both mirror and
+curated domain history. It records when UTT considered a version current, not when
+an object changed in the real world. Continuous operation improves observed history
+without removing that distinction. Do not introduce a generic `source_valid`
+column, inferred validity ranges or associated overlap constraints.
 
-Mirror history needs only system time. Domain entities may additionally use valid
-time. Ranges are nonempty and half-open `[start, end)`; current system-time ranges
-have an unbounded upper end. Enforce non-overlapping `utt_txn` ranges per stable
-identity with GiST exclusions. For temporal domain entities, also exclude
-overlapping `source_valid` ranges while their `utt_txn` ranges overlap.
+Each logical object has a stable, dataset-scoped key; each stored version has an
+immutable `row_id`. Ranges are nonempty and half-open `[start, end)`, with an
+unbounded upper end for current versions. Enforce non-overlapping `utt_txn` ranges
+per stable identity using GiST exclusion constraints. A content change closes the
+old version and opens its replacement at the same database timestamp.
 
-Unknown validity stays NULL. Never substitute ingestion time. A source revision
-is not inherently valid time; an approved source-specific rule may explicitly use
-the accepted revision as an approximation. The initial domain rules retain that
-approximation for city, district and building, and use `datum` for block, `beg` for
-plot and `aufn_dt` for address. Document these choices in curation SQL.
+Keep source dates such as `datum`, `beg` and `aufn_dt` intact as ordinary attributes.
+A changed date participates in source-content comparison like any other changed
+value. Domain curation compares every managed attribute, including dates included
+by its mappings. Do not duplicate dates into a second time axis or reject changed
+content merely because its source date is older. Document source meanings rather
+than assuming a date describes real-world validity.
 
-For domain curation, compare geometry and every managed state attribute first.
-Revision, validity-date or provenance changes alone leave the entity and its ranges
-unchanged. When content changes, close the old `utt_txn` and open a new `row_id` at
-one timestamp. A newer source-valid opening closes the former valid range there;
-an equal opening preserves the valid range; an older opening is rejected. Unknown
-validity follows an explicit domain rule and remains NULL without evidence.
+Dataset revision dates advertised outside feature rows belong in accepted-import
+metadata. For example, data accepted today may report yesterday's dataset revision:
+store today as `accepted_at` and yesterday as `data_revision_at` in
+`mirror.import`, if reliably associated. The creating `import_id` links each
+new feature version to that evidence. Unchanged feature versions retain their
+creating import; later unchanged acceptances remain visible in import history.
+Neither timestamp claims when an individual real-world object changed.
 
-An entity has one valid-time range even when groups have different source dates.
-Its rule must define how validity is established and which supplementary sources
-are eligible. Independent attribute histories, splits, merges and cross-source
-identity changes require explicit domain decisions. Derived spatial relations can
-reference immutable endpoint versions and derive time from them without another
-stored time axis.
+Import/revision metadata and provenance changes alone do not version domain data.
+Source date attributes do count when they are part of the managed state.
+Splits, merges and
+cross-source identity changes require explicit domain decisions. Derived spatial
+relations reference immutable endpoint versions and derive temporal context from
+them without another stored time axis.
 
 ## 4. Optional domain mappings and selected origins
 
@@ -235,7 +232,7 @@ sequenceDiagram
         C->>P: Record every managed group at T, including carried groups
     else Same content, different selected contributions
         C->>P: Append full replacement observation for changed group
-        Note over U: Keep row_id and both ranges unchanged
+        Note over U: Keep row_id and utt_txn unchanged
     else Same content and selection
         Note over U,P: No new entity or provenance rows
     end
@@ -259,35 +256,7 @@ no-source provenance semantics. Source withdrawal does not automatically establi
 real-world cessation. Read accepted inputs under publication-coordinated locking;
 write entity changes and provenance in one transaction through narrow privileges.
 
-## 5. Research datasets, runs and exact inputs
-
-Research outputs follow the same ingestion rules, but define their logical identity
-before version comparison. A baseline and a 2050 scenario coexist; they are not
-successive versions of one result. Parameter/model variants may likewise need
-distinct identities. Rerunning the same logical target creates data versions only
-when its output state changes; execution history belongs to runs.
-
-```mermaid
-flowchart LR
-    V[(Exact source or domain versions)] --> I[Run input references and selection]
-    M[Model version, parameters, tags and comments] --> R[Research run]
-    I --> R
-    R --> O[(Registered output dataset)]
-    O --> H[Current and historical results]
-```
-
-Store `run_id`, immutable tool/model version or code commit, execution time/status,
-parameters, tags, comments and appropriate authorship once per run. Run inputs record
-durable dataset imports/versions or historical states, selection/query, extent and
-input role. A single global timestamp is insufficient for inputs drawn from
-different historical states. Retain exact referenced versions even after retirement.
-
-Result rows hold generated values, entity/input keys and `run_id`, rather than
-repeating input geometry, age, area and other attributes millions of times.
-Performance materializations must be explicit and rebuildable. Runs can explain
-executions without becoming a generic workflow/orchestration framework.
-
-## 6. Everyday access and historical inspection
+## 5. Everyday access and historical inspection
 
 Expose read-only current views and parameterized as-of queries/functions. Protect
 both views and physical tables: simple PostgreSQL views may otherwise be writable.
@@ -298,14 +267,12 @@ historical indexes; verify query plans on representative data.
 -- Current database knowledge, not necessarily valid in the world today.
 SELECT * FROM utt.building WHERE upper_inf(utt_txn);
 
--- What UTT knew then about a particular real-world date.
+-- Source-derived building state known to UTT at a selected time.
 SELECT * FROM utt.building
-WHERE utt_txn @> TIMESTAMPTZ '2026-10-01 12:00:00+00'
-  AND source_valid @> TIMESTAMPTZ '2025-06-01 00:00:00+00';
+WHERE utt_txn @> TIMESTAMPTZ '2026-10-01 12:00:00+00';
 ```
 
-A strict valid-time query excludes unknown validity; an alternative view may label
-it explicitly. For provenance at system time S, select the target version at S,
+For provenance at system time S, select the target version at S,
 then its latest group observation at or before S, keeping all contributors from
 that observation. Use historical mapping/group definitions, not today's activation
 or grouping. Keep multi-record provenance separate or aggregate it explicitly so
@@ -318,6 +285,62 @@ NULL meanings, identifier scope and delivery completeness. Priority is preferenc
 not an accuracy guarantee; do not invent confidence values. Prefer column comments
 and existing code lists over additional registries without a concrete need.
 
+## 6. Required tables and per-source objects
+
+These are target table names and responsibilities, not existing SQL definitions.
+Create shared metadata tables once; create source objects per registered layer.
+Keep source and import metadata in `mirror`, and domain curation metadata in `utt`. Cross-schema routines remain in `utt_pkg`.
+
+### Shared metadata tables
+
+| Table | Purpose and essential content |
+|---|---|
+| `mirror.registry` | Dataset identity `(source_name, layer_name)`, origin/access, stable-key definition, object names, coverage, ownership, published metadata and update/threshold configuration. Latest accepted-import summaries may be retained here. |
+| `mirror.import` | One row per ingestion attempt, identified by immutable `import_id` and dataset FK. Lifecycle status (`staged`, `accepted`, `rejected` or `failed`), staging relation while present, capture time, captured revision evidence, schema revision, scope/completeness, validation/threshold results and manual-review request. Acceptance adds `accepted_at`, reliably associated `data_revision_at` or NULL and acceptance method; the accepted row then becomes immutable. |
+| `mirror.schema_revision` | Immutable dataset structure definitions, identified by dataset and schema revision. Store one row per column with its name, order, source type and documented meaning/units where available, so historical rows and old NULLs remain interpretable. |
+| `utt.curation_mapping` | Immutable candidate mapping revisions: source registration, source columns, target table/group, priority, approved rule identifier and activation flag. |
+| `utt.curation_provenance` | Selected contributions: target-version FK, mapping FK, exact source-version identity/key, accepted input `import_id`, group observation timestamp and selection reason. All contributors in one observation share its timestamp; source-version references must be validated against the registered history table. |
+
+`mirror.import` combines staging metadata and accepted-import history. Keep at most
+one pending staging snapshot per dataset. Its import row holds the evidence needed
+for delayed acceptance without altering source columns. Publication marks that same
+row `accepted` in the transaction that writes version changes and registry summaries;
+`_stored.import_id` references an accepted row. No metadata is copied between import
+tables. Capture time and acceptance time may differ; only acceptance opens
+system-time versions.
+
+Remove the temporary `_staging` table after acceptance or explicit rejection, and
+clear its live staging-relation reference before finalizing the import row. Keep
+accepted rows permanently, including successful no-op imports. Rejected or failed
+attempts may remain for diagnostics, but are not accepted history and cannot be
+referenced as the creating import of stored versions. A publication failure rolls
+back accepted-state changes; recording a failed attempt requires separate error
+handling after rollback. A threshold failure instead leaves the snapshot `staged`
+for manual review. The import table therefore remains populated when idle; only
+its pending subset becomes empty.
+
+Referenced registry entries, schema definitions and accepted imports remain
+available after retirement. Group observations live in provenance rather than a
+separate execution registry; rules remain identifiable SQL rather than another
+transformation catalogue. No permanent change-set table is required.
+
+### Objects for each source dataset/layer
+
+Use a registry-controlled unique layer base name; identical layer names from
+different sources must not collide. Names below are illustrative.
+
+| Object | Lifetime and responsibility |
+|---|---|
+| `mirror.<layer>_source` | Read-only foreign table where supported; otherwise a source adapter. Exposes original data and is not a persistent accepted copy. |
+| `mirror.<layer>_staging` | Temporarily cached incoming rows, preserving source structure/content without UTT version columns. Retained while awaiting manual acceptance; removed after successful publication or rejection. |
+| `mirror.<layer>_stored` | Persistent current and historical source rows: original columns plus immutable `row_id`, `utt_txn`, creating `import_id` and optional content hash. Apply detected changes rather than replacing history. |
+| `mirror.<layer>` | Normal, non-materialized, read-only view selecting current source columns from `_stored` with `upper_inf(utt_txn)`. |
+
+Optional curated `utt.<entity>` tables contain
+managed state, a stable entity key, immutable `row_id` and `utt_txn`; they have no
+generic `source_valid` column. Derived relation tables reference endpoint versions.
+As-of functions/queries read history directly and require no additional tables.
+
 ## 7. Small implementation steps and honest guarantees
 
 The following changes are required to move from the current implementation to this
@@ -325,22 +348,24 @@ model. In particular, replace separate `_review` tables and their review-candida
 lifecycle with the single temporarily cached staging snapshot described in section
 1. Retain the threshold checks and manual-acceptance capability within that staging
 workflow. Replace snapshot-only mirror storage with observed feature history and
-accepted-import identities, and add the mappings, provenance and run lineage
-specified above. These are implementation requirements, not claims of existing
+accepted-import identities, and add the mappings and provenance specified above. These are implementation requirements, not claims of existing
 functionality.
+
+Remove the general `source_valid` axis and its constraints from the target entity
+model and replace validity-derived curation rules with content-based system-time
+versioning. Preserve original source dates as attributes. Review callers and live
+data before implementing that change; this document performs no schema migration.
 
 1. Establish reliable accepted-revision capture and immutable import identity for
    one source. Preserve referenced registrations and schema meaning.
 2. Version that source with protected history and a current view. Verify inserts,
    changes, no-op refreshes, confirmed withdrawals, failed imports, partial coverage,
    schema changes and historical reconstruction before generalizing ingestion.
-3. Register one research result with run metadata and exact input references.
-   Verify scenario coexistence and unchanged reruns without duplicated inputs.
-4. Validate mappings and adapt one domain routine, then the other five. Check
+3. Validate mappings and adapt one domain routine, then the other five. Check
    atomic groups, fallback, temporal constraints, carried groups, selection-only
    changes, historical provenance and transaction consistency. Prefer rollback-only
    database checks where practical.
-5. Expose SQL inspection and later an admin interface over the same boundaries.
+4. Expose SQL inspection and later an admin interface over the same boundaries.
 
 This model preserves accepted observed states and selected origins. It does not
 claim unobserved source history, every rejected candidate, historical service
