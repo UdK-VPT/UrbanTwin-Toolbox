@@ -205,7 +205,7 @@ revision starts `source_valid`; database insertion starts `utt_txn`, and both
 ranges remain open-ended. The registry revision is source metadata and can be newer
 than the stored snapshot when a source check was committed without an import.
 
-The routine fills `utt.city.id`, `name`, `geom`, `source_valid` and `utt_txn`;
+The routine fills `utt.city.city_id_official`, `name`, `geom`, `source_valid` and `utt_txn`;
 PostgreSQL assigns an immutable `row_id`. It compares name and geometry before
 versioning. A newer advertised revision with unchanged content returns 0 and leaves
 the existing source-valid range untouched. When content changed, the routine closes
@@ -245,15 +245,15 @@ local copy:
 SELECT utt_pkg.curate_district();
 ```
 
-The routine maps the numeric long identifier in source `name` to `dist_id`, `namgem`
+The routine maps the numeric long identifier in source `name` to `district_id_official`, `namgem`
 to the district name, and preserves geometry in its source CRS. It applies the same
 content comparison, source-valid inference and transaction-time versioning rules as
 city curation. A revision-only change creates no versions. The result is the number
 of inserted versions; an unchanged rerun returns 0. Missing source districts are not
 closed or deleted automatically.
 
-Because temporal district versions repeat `dist_id`, unversioned columns such as
-`address.district_id`, `block.in_district` and `plot.in_district` remain unconstrained until
+Because temporal district versions repeat `district_id_official`, unversioned columns such as
+`address.district_id_official`, `block.mostly_district_id_official` and `plot.district_id_official` remain unconstrained until
 their temporal relationship semantics are redesigned.
 
 ## Initial block curation

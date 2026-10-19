@@ -71,8 +71,8 @@ BEGIN;
 COMMIT;
 
 -- Example data analysis on utt data
-select 'number of residentials' as category, count(uuid), sum(st_area(geom)) as total_ground_area from utt.building where gfk < 2000
+select 'number of residentials' as category, count(building_id_official), sum(st_area(geom)) as total_ground_area from utt.building where building_function < 2000
 union
-select 'number of non-residentials' as category, count(uuid), sum(st_area(geom)) as total_ground_area from utt.building where gfk >= 2000
+select 'number of non-residentials' as category, count(building_id_official), sum(st_area(geom)) as total_ground_area from utt.building where building_function >= 2000
 union
-select 'number of buildings in berlin' as category, count(uuid), sum(st_area(geom)) as total_ground_area from utt.building where bezeich = 'AX_Gebaeude';
+select 'number of buildings in berlin' as category, count(building_id_official), sum(st_area(geom)) as total_ground_area from utt.building where aaa_description = 'AX_Gebaeude';
