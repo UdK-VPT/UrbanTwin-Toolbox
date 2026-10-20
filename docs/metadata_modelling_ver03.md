@@ -1,7 +1,6 @@
 # UTT metadata model: source history, domain curation and provenance
 
-**Status:** Requested target design, combining [ver01](metadata_modelling_ver01.md)
-and [ver02](metadata_modelling_ver02.md). This document specifies required changes
+**Status:** This document specifies required changes
 from the current implementation to the new metadata model; it is not a description
 of the deployed database or an optional alternative workflow. Its requirements
 take precedence over current SQL interfaces. Implementation and any live migration
