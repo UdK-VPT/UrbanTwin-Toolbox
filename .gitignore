@@ -2,13 +2,11 @@
 .env
 .env.*
 !.env.example
+/.devcontainer/
 
 # Persistent service state and original datasets.
 data/
 /uttdb/source-files/
-
-# Local legacy reference SQL.
-/example/legacy_energymap_berlin_structure.sql
 
 # Windows desktop metadata and editor temporary files.
 Thumbs.db
@@ -18,5 +16,4 @@ Desktop.ini
 *.swo
 
 # Local data model review and legacy reference.
-/docs/datamodel_naming.csv
 /example/legacy_energymap_berlin_structure.sql
