@@ -17,5 +17,5 @@ Desktop.ini
 *.swp
 *.swo
 
-# Local data model review and legacy reference.
+# Local legacy reference and temporary working files.
 /example/legacy_energymap_berlin_structure.sql
