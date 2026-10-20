@@ -2,6 +2,8 @@
 .env
 .env.*
 !.env.example
+
+# VS Code enabled Dev Container configuration
 /.devcontainer/
 
 # Persistent service state and original datasets.
