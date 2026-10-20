@@ -3,14 +3,14 @@
 .env.*
 !.env.example
 
-# VS Code enabled Dev Container configuration
+# VS Code enabled Dev Container configuration.
 /.devcontainer/
 
 # Persistent service state and original datasets.
 data/
 /uttdb/source-files/
 
-# Windows desktop metadata and editor temporary files.
+# Windows OS and macOS files.
 Thumbs.db
 Desktop.ini
 *~
