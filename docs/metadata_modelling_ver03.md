@@ -3,8 +3,11 @@
 **Status:** This document specifies required changes
 from the current implementation to the new metadata model; it is not a description
 of the deployed database or an optional alternative workflow. Its requirements
-take precedence over current SQL interfaces. Implementation and any live migration
-are separate work and have not been performed by writing this document.
+take precedence over current SQL interfaces. Implementation has not been performed by writing this document. Target fresh
+initialization: this prototype does not require preserving existing database
+contents. Do not write migration SQL or compatibility code for existing databases
+until the user explicitly requests that phase. Prefer focused changes to existing
+files to keep contributor history readable.
 
 See the [metadata dictionary](metadata_dictionary.md) for definitions of the main
 concepts and terms.
@@ -47,7 +50,8 @@ flowchart TD
     V --> X
 ```
 
-Store one physical version table per registered dataset/layer. A current view
+For sources represented as database rows, store one physical version table per
+registered dataset/layer. A current view
 filters that table; it does not duplicate storage. The staging snapshot is a
 temporary cache for both import and inspection; there is no separate review table
 or review candidate. Change detection is an operation, not another permanent data
@@ -100,10 +104,83 @@ acceptance or rejection. Manual acceptance can override threshold checks, but mu
 still satisfy structural and integrity validation. Remove the cache after successful
 publication or explicit rejection; keep pending snapshots until a decision is made.
 
+### Native files registered by reference
+
+Registration must also support files that remain outside PostgreSQL, such as
+NetCDF and other specialist formats. Register their dataset identity in
+`mirror.registry` with an explicit storage mode: database rows or external files.
+External-file registration does not require a foreign table, geometry, raster
+conversion, a PostGIS representation or domain curation. Consumers read the native
+file using its server-side path; PostgreSQL stores its identity and version history.
+
+Keep pure-file registration and its accepted version history directly in
+`mirror.registry`; do not introduce a separate file-tracking table. Each accepted
+file registration version contains an immutable `row_id`, server-side path and
+namespace, native format, byte size, content checksum with its algorithm,
+`utt_txn` and creating `import_id`. The repeatable `(source_name, layer_name)`
+identifies the logical file dataset across versions; its path is a location, not
+its identity. Register independently versioned files as separate dataset/layer
+entries rather than embedding a file list or history in JSON.
+
+The registry can therefore contain several historical rows for one pure-file
+identity. Replace its current composite primary-key assumption with immutable
+registry-row identity and non-overlapping `utt_txn` ranges per pure-file identity.
+Database-row registrations remain single entries; do not impose temporal metadata
+on them without a concrete use. Enforce storage-mode consistency for each logical
+identity and prevent duplicate database-row registrations. References to a registry
+row must identify its immutable `row_id`; do not treat the repeatable logical key
+as unique across file history. Imports and mappings retain the exact referenced
+registration, while refresh resolves the current registration by logical identity.
+An initial registration may exist before acceptance without claiming accepted file
+history; only acceptance opens its first `utt_txn`, and pending refresh evidence
+stays in staging rather than overwriting the accepted registry row.
+
+Paths must identify the server or mount namespace in which they resolve; for
+container access use the mounted path, for example
+`/source-files/climate/run-001.nc`.
+
+Use the same `mirror.import` lifecycle and acceptance boundary as row-based
+sources. For external files, stage a manifest of stable file keys, paths, formats,
+sizes and checksums rather than parsing their contents into source rows. Validate
+that each referenced file is readable and that its bytes match the manifest.
+Manual review inspects that manifest and the same pinned files; it must not
+silently accept newer bytes at a reused path. Preserve the staged files unchanged
+until acceptance or rejection and revalidate their checksums before publication.
+A minimal file reader/checksummer may supply this evidence where PostgreSQL
+cannot access the filesystem or format; acceptance and history remain in SQL.
+
+On acceptance, compare each logical file dataset's checksum and registered state.
+Changed bytes or a changed path/format create a replacement version; an unchanged
+registration records a successful import without creating another file version.
+Close the old `utt_txn` and open the new one at the same acceptance timestamp.
+Enforce non-overlapping ranges per logical file dataset. File modification times alone
+are not reliable change detection and do not establish source validity. Native
+time coordinates and published temporal coverage remain source metadata, not
+another UTT-managed time axis. A missing or unreadable file is an import failure,
+not automatic withdrawal; withdrawal needs the same explicit completeness rules
+as row-based sources.
+
+Retain accepted files at immutable version-specific paths if historical bytes must
+remain retrievable. Never overwrite a retained version's file. Database history
+preserves references and checksums, not file contents: deleting or replacing files
+can make historical versions unavailable, and a checksum cannot restore them.
+Filesystem retention and backups must be managed separately; a database transaction
+cannot roll back a filesystem change. Rejection removes the temporary manifest,
+not the registered source files. A historical query returns the path and checksum
+known at the requested system time, with byte retrieval depending on retention.
+
+For example, accept logical file `temperature` at
+`/source-files/climate/temperature-v1.nc` at T1, then changed bytes at
+`/source-files/climate/temperature-v2.nc` at T2. Keep two reference versions with
+`utt_txn = [T1, T2)` and `[T2, infinity)`, and retain both files for reproducibility.
+No NetCDF variables need to become PostGIS columns. Registration and history work
+without a parser; any later curation needs an explicit format-specific reader and
+must reference the exact accepted file version.
+
 ## 2. Dataset identity and accepted source history
 
-Register a dataset/layer, not just a service endpoint. Keep the composite registry
-identity `(source_name, layer_name)` until a deliberate migration. A referenced
+Register a dataset/layer, not just a service endpoint. Keep `(source_name, layer_name)` as repeatable logical registry identity in the
+target implementation; pure-file versions have distinct immutable registry row IDs. A referenced
 registration must not be deleted or repurposed; retire it and register a distinct
 source when its identity changes. Historical references remain usable.
 
@@ -111,6 +188,7 @@ source when its identity changes. Historical references remain usable.
 |---|---|
 | Dataset registry | Identity, source origin, location, table/view, coverage, ownership, update configuration and published metadata |
 | Accepted import | Immutable `import_id`, dataset, acceptance time, reliably associated revision or NULL, coverage/completeness and schema revision |
+| External-file registry version | Repeatable logical dataset identity, immutable registry `row_id`, server-side path, format, size, checksum, `utt_txn` and creating `import_id` |
 | Feature version | Immutable version identity, stable source-scoped key, original state, `utt_txn`, creating `import_id` and optional content hash |
 | Schema revision | Meaning and structure needed to interpret the accepted historical rows |
 
@@ -146,7 +224,8 @@ changed meanings must remain interpretable. A historical NULL may mean “column
 not yet present,” rather than “known missing.” Preserve originals where feasible.
 History begins at the first accepted observation; it cannot recover unseen remote
 changes. Logical state reconstruction is the goal; byte-exact reproduction also
-requires an optional original-file/snapshot archive.
+requires an optional original-file/snapshot archive. For external-file sources,
+retention of each referenced native file is required to retrieve its historical bytes.
 
 ## 3. Time: one UTT-managed axis
 
@@ -278,8 +357,9 @@ or grouping. Keep multi-record provenance separate or aggregate it explicitly so
 joins do not accidentally multiply flat entity rows.
 
 Preserve published metadata in its original language, leave absent values NULL
-and do not infer license rights. Registry descriptions are current metadata, not
-an archive of every service response. Document units, CRS/elevation references,
+and do not infer license rights. Database-row registry descriptions are current metadata, not an archive of every
+service response. Pure-file registry versions retain their accepted reference
+state; this likewise does not archive every service response. Document units, CRS/elevation references,
 NULL meanings, identifier scope and delivery completeness. Priority is preference,
 not an accuracy guarantee; do not invent confidence values. Prefer column comments
 and existing code lists over additional registries without a concrete need.
@@ -294,7 +374,7 @@ Keep source and import metadata in `mirror`, and domain curation metadata in `ut
 
 | Table | Purpose and essential content |
 |---|---|
-| `mirror.registry` | Dataset identity `(source_name, layer_name)`, origin/access, stable-key definition, object names, coverage, ownership, published metadata and update/threshold configuration. Latest accepted-import summaries may be retained here. |
+| `mirror.registry` | Dataset identity `(source_name, layer_name)`, origin/access, stable-key definition, storage mode (database rows or external files), object names or file location, coverage, ownership, published metadata and update/threshold configuration. Pure-file datasets also store their accepted reference versions here, with immutable `row_id`, path/namespace, format, byte size, checksum/algorithm, `utt_txn` and creating accepted `import_id`. Latest accepted-import summaries may be retained here. |
 | `mirror.import` | One row per ingestion attempt, identified by immutable `import_id` and dataset FK. Lifecycle status (`staged`, `accepted`, `rejected` or `failed`), staging relation while present, capture time, captured revision evidence, schema revision, scope/completeness, validation/threshold results and manual-review request. Acceptance adds `accepted_at`, reliably associated `data_revision_at` or NULL and acceptance method; the accepted row then becomes immutable. |
 | `mirror.schema_revision` | Immutable dataset structure definitions, identified by dataset and schema revision. Store one row per column with its name, order, source type and documented meaning/units where available, so historical rows and old NULLs remain interpretable. |
 | `utt.curation_mapping` | Immutable candidate mapping revisions: source registration, source columns, target table/group, priority, approved rule identifier and activation flag. |
@@ -325,6 +405,14 @@ transformation catalogue. No permanent change-set table is required.
 
 ### Objects for each source dataset/layer
 
+The per-layer objects below apply to database-row sources. External-file sources
+use versioned `mirror.registry` entries and a temporary staging manifest instead; they need no
+foreign table or per-layer `_stored` table. `mirror.import` references their staged
+manifest while pending; a relational schema revision is not required for an opaque
+native file. Record its format and available published structure metadata without
+inventing a column schema. Current and as-of queries filter file reference history
+in `mirror.registry` by logical dataset identity and `utt_txn`.
+
 Use a registry-controlled unique layer base name; identical layer names from
 different sources must not collide. Names below are illustrative.
 
@@ -352,19 +440,24 @@ functionality.
 
 Remove the general `source_valid` axis and its constraints from the target entity
 model and replace validity-derived curation rules with content-based system-time
-versioning. Preserve original source dates as attributes. Review callers and live
-data before implementing that change; this document performs no schema migration.
+versioning. Preserve original source dates as attributes. Review and update callers
+together with the initialization SQL; existing database contents need not be
+converted or preserved. This document changes no database.
 
 1. Establish reliable accepted-revision capture and immutable import identity for
    one source. Preserve referenced registrations and schema meaning.
 2. Version that source with protected history and a current view. Verify inserts,
    changes, no-op refreshes, confirmed withdrawals, failed imports, partial coverage,
    schema changes and historical reconstruction before generalizing ingestion.
-3. Validate mappings and adapt one domain routine, then the other five. Check
+3. Add external-file registration using the same import boundary. Verify changed
+   bytes, unchanged refreshes, path changes, delayed acceptance, unreadable or
+   replaced files, explicit withdrawal and historical retrieval without format
+   conversion.
+4. Validate mappings and adapt one domain routine, then the other five. Check
    atomic groups, fallback, temporal constraints, carried groups, selection-only
    changes, historical provenance and transaction consistency. Prefer rollback-only
    database checks where practical.
-4. Expose SQL inspection and later an admin interface over the same boundaries.
+5. Expose SQL inspection and later an admin interface over the same boundaries.
 
 This model preserves accepted observed states and selected origins. It does not
 claim unobserved source history, every rejected candidate, historical service

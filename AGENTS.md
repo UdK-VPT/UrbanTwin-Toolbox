@@ -26,7 +26,11 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   domain requirement proves another temporal axis is necessary. Avoid redundant
   timestamps and do not impose bitemporality on data that does not need it.
 - Existing interfaces describe the current implementation. Check their callers before
-  replacement or removal, and use explicit migrations for live data changes.
+  replacement or removal. This is a changing prototype: existing database contents
+  need not be preserved, and fresh initialization is the implementation target. Do
+  not write migration SQL or compatibility code for existing databases until the
+  user explicitly starts that phase. Prefer focused edits to existing files over
+  wholesale rewrites so contributor history remains readable.
 
 ## Repository and runtime
 
@@ -78,8 +82,8 @@ PostgreSQL so the team can understand, discuss and maintain them together.
 - Keep changes small and independently usable. Document practical calls in
   [docs/uttdb.md](docs/uttdb.md) and routine comments.
 - Use rollback-only database checks where practical. Distinguish repository changes
-  from changes applied to a running database. Do not add migration files during the
-  current preparation phase unless explicitly requested.
+  from changes applied to a running database. Do not add migration files or plan live-data
+  conversion until the user explicitly requests the migration phase.
 
 ## Temporal curation rules
 

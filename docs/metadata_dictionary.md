@@ -11,8 +11,13 @@ already implemented. The five sections group the main concepts and their vocabul
 | Source registration and ingestion | Identifying a dataset, reading it into staging, checking it and publishing accepted changes into persistent history. |
 | Dataset / layer | An identifiable collection of records with a defined structure and scope. A service may expose several separately registered layers. |
 | Source | The origin supplying a dataset, such as a WFS service or file. |
-| Registry (`mirror.registry`) | Metadata describing registered datasets: identity, origin, access, coverage, ownership and related information. It does not store the dataset's feature rows. |
+| Registry (`mirror.registry`) | Metadata describing registered datasets: identity, origin, access, coverage, ownership and related information. For pure-file datasets it also stores accepted reference versions and their system-time history directly; it does not store file payloads or feature rows. |
 | Metadata | Information describing data, its meaning, origin, structure or handling, rather than the feature values themselves. |
+| External-file registration | Registering a native file dataset and versioned server-side references without loading its payload into PostgreSQL or requiring a PostGIS representation. |
+| Logical file identity | Repeatable registry identity `(source_name, layer_name)`, independent of the file path and successive registry version rows. Independently versioned files have separate registrations. |
+| File registry version | An accepted row in `mirror.registry` with logical dataset identity, immutable `row_id`, server-side path and namespace, format, size, checksum/algorithm, `utt_txn` and creating `import_id`; no separate file-tracking table. |
+| Staging manifest | Pending external-file keys, paths, formats, sizes and checksums used for validation and acceptance instead of parsed source rows. |
+| File retention | Keeping accepted native files unchanged at version-specific paths so historical references remain retrievable; separate from database history and backups. |
 | Foreign table | A PostgreSQL interface for reading externally held data without first copying it into a normal local table. |
 | Source adapter | A reader for a source that does not use a foreign table, feeding the same staging workflow. |
 | Feature / source record | One identifiable object or record in a source dataset, often with geometry. |
@@ -57,7 +62,7 @@ already implemented. The five sections group the main concepts and their vocabul
 | Withdrawal | Removal from the accepted current source state under explicit delivery rules. It does not by itself prove real-world demolition or cessation. |
 | Retirement | Ending active use of a registration or entity under explicit rules while retaining required historical identities and references. |
 | Content-based idempotency | Reprocessing the same state creates no additional data versions. Changed source date attributes count as content changes when managed by the mapping; import metadata or provenance alone do not version entities. |
-| Content hash | An optional deterministic fingerprint of complete state used for comparison. It excludes UTT-generated metadata. |
+| Content hash | A deterministic fingerprint used for comparison; optional for row state, required with its algorithm for external-file bytes. It excludes UTT-generated metadata. |
 
 ## 3. Domain curation and mappings
 
