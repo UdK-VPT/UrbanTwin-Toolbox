@@ -16,7 +16,7 @@ Stop with `docker compose down`; stored data is preserved in the untracked
 `uttdb/data/` and `pgadmin/data/` folders.
 
 [example/berlin.sql](example/berlin.sql) shows how to register, store and curate data
-from public Berlin sources. It downloads large datasets and can take some time (15 min). Run
+from public Berlin sources. It downloads large datasets and can take substantial time. Run
 the SQL as a whole or step by step in pgAdmin.
 
 Start with the [documentation overview](docs/welcome.md) for database usage,

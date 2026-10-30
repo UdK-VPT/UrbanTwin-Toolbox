@@ -1,7 +1,7 @@
 -- Selected EnergyMap table structures, moved from emc to utt.
 -- Fresh initialization only; no source data or EnergyMap workflows are imported.
 -- Column names and comments follow the reviewed UTT data model; retain UTT integrity constraints.
--- Access follows the UTT group-role defaults established by 902.
+-- Read access follows 902; direct pipeline writes are revoked below in favor of curation routines.
 
 -- address
 
@@ -25,20 +25,15 @@ CREATE TABLE utt.address (
     address_date timestamp without time zone,
     type character varying,
     building_id_official character varying,
-    source_valid tstzrange,
     utt_txn tstzrange NOT NULL,
-    CONSTRAINT address_source_valid_nonempty CHECK (source_valid IS NULL OR NOT isempty(source_valid)),
-    CONSTRAINT address_utt_txn_nonempty CHECK (NOT isempty(utt_txn)),
+    CONSTRAINT address_utt_txn_nonempty CHECK (NOT isempty(utt_txn) AND NOT lower_inf(utt_txn)
+        AND isfinite(lower(utt_txn)) AND lower_inc(utt_txn) AND NOT upper_inc(utt_txn)
+        AND (upper_inf(utt_txn) OR isfinite(upper(utt_txn)))),
     CONSTRAINT address_utt_txn_no_overlap EXCLUDE USING gist
-        (address_id_official WITH =, utt_txn WITH &&),
-    CONSTRAINT address_source_valid_no_overlap EXCLUDE USING gist
-        (address_id_official WITH =, source_valid WITH &&, utt_txn WITH &&)
-        WHERE (source_valid IS NOT NULL)
+        (address_id_official WITH =, utt_txn WITH &&)
 );
 
 COMMENT ON COLUMN utt.address.row_id IS 'UTT-internal immutable identifier of this stored address version.';
-
-COMMENT ON COLUMN utt.address.source_valid IS 'Optional source-valid time. Address curation derives it from the RBS source field aufn_dt; NULL means the source supplies no usable validity information.';
 
 COMMENT ON COLUMN utt.address.utt_txn IS 'System time when UTT considered this version current. Managed by curation as a half-open range with an unbounded end for the current version.';
 
@@ -89,20 +84,16 @@ CREATE TABLE utt.block (
     planning_area_no bigint,
     mostly_district_id_official bigint,
     centroid public.geometry,
-    source_valid tstzrange,
+    source_date timestamp without time zone,
     utt_txn tstzrange NOT NULL,
-    CONSTRAINT block_source_valid_nonempty CHECK (source_valid IS NULL OR NOT isempty(source_valid)),
-    CONSTRAINT block_utt_txn_nonempty CHECK (NOT isempty(utt_txn)),
+    CONSTRAINT block_utt_txn_nonempty CHECK (NOT isempty(utt_txn) AND NOT lower_inf(utt_txn)
+        AND isfinite(lower(utt_txn)) AND lower_inc(utt_txn) AND NOT upper_inc(utt_txn)
+        AND (upper_inf(utt_txn) OR isfinite(upper(utt_txn)))),
     CONSTRAINT block_utt_txn_no_overlap EXCLUDE USING gist
-        (block_id_official WITH =, utt_txn WITH &&),
-    CONSTRAINT block_source_valid_no_overlap EXCLUDE USING gist
-        (block_id_official WITH =, source_valid WITH &&, utt_txn WITH &&)
-        WHERE (source_valid IS NOT NULL)
+        (block_id_official WITH =, utt_txn WITH &&)
 );
 
 COMMENT ON COLUMN utt.block.row_id IS 'UTT-internal immutable identifier of this stored block version.';
-
-COMMENT ON COLUMN utt.block.source_valid IS 'Optional source-valid time. Block curation derives it from the source datum field; NULL means the source supplies no usable validity information.';
 
 COMMENT ON COLUMN utt.block.utt_txn IS 'System time when UTT considered this version current. Managed by curation as a half-open range with an unbounded end for the current version.';
 
@@ -123,7 +114,7 @@ CREATE INDEX block_centroid_idx ON utt.block USING gist (centroid);
 
 CREATE TABLE utt.building (
     row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    source_fid bigint NOT NULL,
+    source_fid bigint,
     building_id_official character varying NOT NULL,
     geom public.geometry,
     building_function integer,
@@ -154,20 +145,15 @@ CREATE TABLE utt.building (
     heated boolean,
     usage_type text,
     building_type text,
-    source_valid tstzrange,
     utt_txn tstzrange NOT NULL,
-    CONSTRAINT building_source_valid_nonempty CHECK (source_valid IS NULL OR NOT isempty(source_valid)),
-    CONSTRAINT building_utt_txn_nonempty CHECK (NOT isempty(utt_txn)),
+    CONSTRAINT building_utt_txn_nonempty CHECK (NOT isempty(utt_txn) AND NOT lower_inf(utt_txn)
+        AND isfinite(lower(utt_txn)) AND lower_inc(utt_txn) AND NOT upper_inc(utt_txn)
+        AND (upper_inf(utt_txn) OR isfinite(upper(utt_txn)))),
     CONSTRAINT building_utt_txn_no_overlap EXCLUDE USING gist
-        (building_id_official WITH =, utt_txn WITH &&),
-    CONSTRAINT building_source_valid_no_overlap EXCLUDE USING gist
-        (building_id_official WITH =, source_valid WITH &&, utt_txn WITH &&)
-        WHERE (source_valid IS NOT NULL)
+        (building_id_official WITH =, utt_txn WITH &&)
 );
 
 COMMENT ON COLUMN utt.building.row_id IS 'UTT-internal immutable identifier of this stored building version.';
-
-COMMENT ON COLUMN utt.building.source_valid IS 'Optional source-valid time. Building curation derives it from source-backed revision metadata; NULL means the source supplies no usable validity information.';
 
 COMMENT ON COLUMN utt.building.utt_txn IS 'System time when UTT considered this version current. Managed by curation as a half-open range with an unbounded end for the current version.';
 
@@ -244,20 +230,15 @@ CREATE TABLE utt.city (
     city_id_official bigint NOT NULL,
     name character varying NOT NULL,
     geom public.geometry,
-    source_valid tstzrange,
     utt_txn tstzrange NOT NULL,
-    CONSTRAINT city_source_valid_nonempty CHECK (source_valid IS NULL OR NOT isempty(source_valid)),
-    CONSTRAINT city_utt_txn_nonempty CHECK (NOT isempty(utt_txn)),
+    CONSTRAINT city_utt_txn_nonempty CHECK (NOT isempty(utt_txn) AND NOT lower_inf(utt_txn)
+        AND isfinite(lower(utt_txn)) AND lower_inc(utt_txn) AND NOT upper_inc(utt_txn)
+        AND (upper_inf(utt_txn) OR isfinite(upper(utt_txn)))),
     CONSTRAINT city_utt_txn_no_overlap EXCLUDE USING gist
-        (city_id_official WITH =, utt_txn WITH &&),
-    CONSTRAINT city_source_valid_no_overlap EXCLUDE USING gist
-        (city_id_official WITH =, source_valid WITH &&, utt_txn WITH &&)
-        WHERE (source_valid IS NOT NULL)
+        (city_id_official WITH =, utt_txn WITH &&)
 );
 
 COMMENT ON COLUMN utt.city.row_id IS 'UTT-internal immutable identifier of this stored city version.';
-
-COMMENT ON COLUMN utt.city.source_valid IS 'Optional source-valid time. City curation derives it from source-backed revision metadata; NULL means the source supplies no usable validity information.';
 
 COMMENT ON COLUMN utt.city.utt_txn IS 'System time when UTT considered this version current. Managed by curation as a half-open range with an unbounded end for the current version.';
 
@@ -276,20 +257,15 @@ CREATE TABLE utt.district (
     district_id_official bigint NOT NULL,
     name character varying NOT NULL,
     geom public.geometry,
-    source_valid tstzrange,
     utt_txn tstzrange NOT NULL,
-    CONSTRAINT district_source_valid_nonempty CHECK (source_valid IS NULL OR NOT isempty(source_valid)),
-    CONSTRAINT district_utt_txn_nonempty CHECK (NOT isempty(utt_txn)),
+    CONSTRAINT district_utt_txn_nonempty CHECK (NOT isempty(utt_txn) AND NOT lower_inf(utt_txn)
+        AND isfinite(lower(utt_txn)) AND lower_inc(utt_txn) AND NOT upper_inc(utt_txn)
+        AND (upper_inf(utt_txn) OR isfinite(upper(utt_txn)))),
     CONSTRAINT district_utt_txn_no_overlap EXCLUDE USING gist
-        (district_id_official WITH =, utt_txn WITH &&),
-    CONSTRAINT district_source_valid_no_overlap EXCLUDE USING gist
-        (district_id_official WITH =, source_valid WITH &&, utt_txn WITH &&)
-        WHERE (source_valid IS NOT NULL)
+        (district_id_official WITH =, utt_txn WITH &&)
 );
 
 COMMENT ON COLUMN utt.district.row_id IS 'UTT-internal immutable identifier of this stored district version.';
-
-COMMENT ON COLUMN utt.district.source_valid IS 'Optional source-valid time. District curation derives it from source-backed revision metadata; NULL means the source supplies no usable validity information.';
 
 COMMENT ON COLUMN utt.district.utt_txn IS 'System time when UTT considered this version current. Managed by curation as a half-open range with an unbounded end for the current version.';
 
@@ -310,21 +286,17 @@ CREATE TABLE utt.plot (
     parcel_number_numerator bigint,
     cadastral_district_code bigint,
     cadastral_field_number bigint,
+    source_date timestamp without time zone,
     district_id_official bigint,
-    source_valid tstzrange,
     utt_txn tstzrange NOT NULL,
-    CONSTRAINT plot_source_valid_nonempty CHECK (source_valid IS NULL OR NOT isempty(source_valid)),
-    CONSTRAINT plot_utt_txn_nonempty CHECK (NOT isempty(utt_txn)),
+    CONSTRAINT plot_utt_txn_nonempty CHECK (NOT isempty(utt_txn) AND NOT lower_inf(utt_txn)
+        AND isfinite(lower(utt_txn)) AND lower_inc(utt_txn) AND NOT upper_inc(utt_txn)
+        AND (upper_inf(utt_txn) OR isfinite(upper(utt_txn)))),
     CONSTRAINT plot_utt_txn_no_overlap EXCLUDE USING gist
-        (plot_id_official WITH =, utt_txn WITH &&),
-    CONSTRAINT plot_source_valid_no_overlap EXCLUDE USING gist
-        (plot_id_official WITH =, source_valid WITH &&, utt_txn WITH &&)
-        WHERE (source_valid IS NOT NULL)
+        (plot_id_official WITH =, utt_txn WITH &&)
 );
 
 COMMENT ON COLUMN utt.plot.row_id IS 'UTT-internal immutable identifier of this stored plot version.';
-
-COMMENT ON COLUMN utt.plot.source_valid IS 'Optional source-valid time. Plot curation derives its opening from the ALKIS feature beg date; NULL means the source supplies no usable validity information.';
 
 COMMENT ON COLUMN utt.plot.utt_txn IS 'System time when UTT considered this version current. Managed by curation as a half-open range with an unbounded end for the current version.';
 
@@ -352,7 +324,7 @@ CREATE INDEX plot_geom_idx ON utt.plot USING gist (geom);
 -- Other source identifiers have no corresponding UTT table yet.
 
 -- Pairwise spatial relationships connect immutable entity versions. Their temporal
--- context comes from the referenced endpoint rows, so no third time axis is stored.
+-- context is the intersection of endpoint system-time ranges; no extra time axis is stored.
 
 -- relation_bldg_block
 
@@ -398,3 +370,91 @@ CREATE TABLE utt.relation_plot_block (
 COMMENT ON COLUMN utt.relation_plot_block.plot_row_id IS 'Immutable UTT plot version participating in this derived spatial relation.';
 COMMENT ON COLUMN utt.relation_plot_block.block_row_id IS 'Immutable UTT block version participating in this derived spatial relation.';
 COMMENT ON COLUMN utt.relation_plot_block.relative_intersection IS 'Intersection area divided by the plot version area.';
+
+COMMENT ON COLUMN utt.block.source_date IS 'Original datum supplied by the block source, retained as state without inferring valid time.';
+COMMENT ON COLUMN utt.plot.source_date IS 'Original beg supplied by the plot source, retained as state without inferring valid time.';
+
+-- Candidate mappings are immutable revisions; only activation may change.
+CREATE TABLE utt.curation_mapping (
+    mapping_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    registry_row_id bigint NOT NULL REFERENCES mirror.registry(row_id),
+    target_entity text NOT NULL CHECK (target_entity IN ('city','district','block','plot','building','address')),
+    target_columns text[] NOT NULL,
+    source_columns text[] NOT NULL,
+    source_id_column text NOT NULL,
+    rule_name text NOT NULL,
+    priority integer NOT NULL DEFAULT 100,
+    active boolean NOT NULL DEFAULT true,
+    UNIQUE (mapping_id, registry_row_id)
+);
+COMMENT ON TABLE utt.curation_mapping IS 'Immutable candidate mapping revisions. target_columns is an atomic group; lower priority wins. Named approved SQL rules define matching, conversion and eligibility. Direct rules pair source_columns and target_columns in order. Activation is the only mutable field.';
+
+-- Partitioning gives each dynamic source history a genuine source-version FK.
+-- Partitions are created by mapping validation, only for concrete registered inputs.
+CREATE TABLE utt.curation_provenance (
+    provenance_id bigint GENERATED ALWAYS AS IDENTITY,
+    source_registry_row_id bigint NOT NULL REFERENCES mirror.registry(row_id),
+    mapping_id bigint NOT NULL,
+    target_table regclass NOT NULL,
+    target_row_id bigint NOT NULL,
+    source_row_id bigint,
+    source_file_row_id bigint REFERENCES mirror.registry(row_id),
+    source_key jsonb NOT NULL CHECK (jsonb_typeof(source_key)='object'),
+    import_id bigint NOT NULL REFERENCES mirror.import(import_id),
+    observed_at timestamptz NOT NULL CHECK (isfinite(observed_at)),
+    selection_reason text NOT NULL CHECK (selection_reason IN ('preferred','fallback','carried')),
+    PRIMARY KEY (source_registry_row_id, provenance_id),
+    FOREIGN KEY (mapping_id,source_registry_row_id)
+        REFERENCES utt.curation_mapping(mapping_id,registry_row_id),
+    CHECK (num_nonnulls(source_row_id,source_file_row_id)=1),
+    UNIQUE NULLS NOT DISTINCT (source_registry_row_id,target_table,target_row_id,
+        mapping_id,observed_at,source_row_id,source_file_row_id)
+) PARTITION BY LIST (source_registry_row_id);
+CREATE INDEX curation_provenance_target_idx ON utt.curation_provenance
+    (target_table, target_row_id, observed_at DESC);
+COMMENT ON TABLE utt.curation_provenance IS 'Append-only selected contributions, one row per source contributor and atomic group observation. Generic target_table/target_row_id is checked against the mapping and immutable target history by the validation trigger; exactly one row/file source identity. Per-source partitions add real source-history FKs. Each observation contains the complete selected contributor set; losing candidates and copied source values are not stored.';
+
+COMMENT ON COLUMN utt.curation_provenance.target_table IS 'Target relation identity, e.g. utt.building::regclass; must match the immutable mapping. A regclass identifies a table, not a row foreign key.';
+COMMENT ON COLUMN utt.curation_provenance.target_row_id IS 'Immutable row_id in target_table. The provenance trigger checks existence and observation time; target history rejects deletion and truncation.';
+
+-- Everyday access adds no data copies. Explicit as-of SQL uses the same tables.
+CREATE INDEX city_current_id_idx ON utt.city(city_id_official) WHERE upper_inf(utt_txn);
+CREATE VIEW utt.city_current WITH (security_invoker=true) AS
+    SELECT * FROM utt.city WHERE upper_inf(utt_txn);
+CREATE INDEX district_current_id_idx ON utt.district(district_id_official) WHERE upper_inf(utt_txn);
+CREATE VIEW utt.district_current WITH (security_invoker=true) AS
+    SELECT * FROM utt.district WHERE upper_inf(utt_txn);
+CREATE INDEX block_current_id_idx ON utt.block(block_id_official) WHERE upper_inf(utt_txn);
+CREATE VIEW utt.block_current WITH (security_invoker=true) AS
+    SELECT * FROM utt.block WHERE upper_inf(utt_txn);
+CREATE INDEX plot_current_id_idx ON utt.plot(plot_id_official) WHERE upper_inf(utt_txn);
+CREATE VIEW utt.plot_current WITH (security_invoker=true) AS
+    SELECT * FROM utt.plot WHERE upper_inf(utt_txn);
+CREATE INDEX building_current_id_idx ON utt.building(building_id_official) WHERE upper_inf(utt_txn);
+CREATE VIEW utt.building_current WITH (security_invoker=true) AS
+    SELECT * FROM utt.building WHERE upper_inf(utt_txn);
+CREATE INDEX address_current_id_idx ON utt.address(address_id_official) WHERE upper_inf(utt_txn);
+CREATE VIEW utt.address_current WITH (security_invoker=true) AS
+    SELECT * FROM utt.address WHERE upper_inf(utt_txn);
+
+-- Pipeline writes now go exclusively through security-definer curation boundaries.
+REVOKE CREATE ON SCHEMA utt, utt_pkg FROM uttdb_pipeline;
+REVOKE INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA utt
+    FROM uttdb_pipeline, uttdb_app_writer;
+GRANT ALL ON ALL TABLES IN SCHEMA utt TO uttdb_dba;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA utt TO uttdb_dba;
+REVOKE UPDATE ON ALL SEQUENCES IN SCHEMA utt FROM uttdb_pipeline;
+
+CREATE VIEW utt.relation_bldg_block_current WITH (security_invoker=true) AS
+SELECT r.* FROM utt.relation_bldg_block r JOIN utt.building a ON a.row_id=r.building_row_id
+JOIN utt.block b ON b.row_id=r.block_row_id WHERE upper_inf(a.utt_txn) AND upper_inf(b.utt_txn);
+CREATE VIEW utt.relation_bldg_plot_current WITH (security_invoker=true) AS
+SELECT r.* FROM utt.relation_bldg_plot r JOIN utt.building a ON a.row_id=r.building_row_id
+JOIN utt.plot b ON b.row_id=r.plot_row_id WHERE upper_inf(a.utt_txn) AND upper_inf(b.utt_txn);
+CREATE VIEW utt.relation_plot_block_current WITH (security_invoker=true) AS
+SELECT r.* FROM utt.relation_plot_block r JOIN utt.plot a ON a.row_id=r.plot_row_id
+JOIN utt.block b ON b.row_id=r.block_row_id WHERE upper_inf(a.utt_txn) AND upper_inf(b.utt_txn);
+REVOKE INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER ON utt.relation_bldg_block_current,
+    utt.relation_bldg_plot_current,utt.relation_plot_block_current FROM uttdb_pipeline,uttdb_app_writer;
+GRANT SELECT ON utt.relation_bldg_block_current,utt.relation_bldg_plot_current,
+    utt.relation_plot_block_current TO uttdb_dba;

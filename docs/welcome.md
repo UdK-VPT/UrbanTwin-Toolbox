@@ -1,16 +1,20 @@
 # UrbanTwin-Toolbox
 
 UTT brings source GIS data into a self-owned PostgreSQL/PostGIS database alongside
-3DCityDB. Keep data workflows readable and primarily in SQL,
-so contributors can understand and develop the system together.
+3DCityDB. Registration and accepted source history work independently of optional
+domain curation; the workflows run primarily in SQL.
 
-The current stack runs UTTDB and pgAdmin. WFS, local vector-file and GeoTIFF raster
-mirroring, temporal curation for cities, districts, blocks, cadastral plots, buildings
-and addresses, and version-aware spatial relation calculation.
+The current stack runs UTTDB and pgAdmin. It mirrors WFS, local vector files and
+GeoTIFF rasters with accepted source history, and versions native-file references
+without converting their contents. Domain curation covers cities, districts,
+blocks, cadastral plots, buildings and addresses, with spatial relations between
+entity versions.
 
 - [Quick start](../README.md)
 - [UTTDB](uttdb.md): schemas, source imports and storage
-- [Temporal curation](temporal-model.md): versioning and update decisions
+- [Metadata model](metadata-modelling.md): source history, curation and provenance
+- [Glossary](glossary.md): terminology used throughout the guides
+- [Database reference](database-reference.md): workflow steps, objects and maintenance responsibilities
 - [pgAdmin](pgadmin.md): database access
 - [Architecture](architecture.md): current stack and data flow
 
@@ -19,7 +23,7 @@ Images, build settings and storage paths are defined in Compose.
 The root [Compose file](../compose.yml) runs the entire stack on Windows or Linux.
 Commands in these guides run from the repository root.
 
-Contributions should favor small, explainable database changes. Describe proposed
-structures before implementing them; distinguish fresh initialization from changes
-to existing databases. Temporal curation follows the [shared temporal model](temporal-model.md),
-and missing definitions must never imply deleting existing data.
+Initialization SQL applies to a fresh database; editing it does not update an
+existing instance. Both source and curated history use one system-time axis,
+recording when UTT considered a state current. Source dates remain ordinary attributes.
+Contributor and agent implementation rules live in [AGENTS.md](../AGENTS.md).
