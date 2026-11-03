@@ -44,7 +44,7 @@ CREATE UNIQUE INDEX registry_table_base ON mirror.registry(table_base) WHERE tab
 CREATE INDEX registry_extent_idx ON mirror.registry USING gist(extent);
 COMMENT ON TABLE mirror.registry IS 'Dataset identity and access; external-file accepted versions are stored directly here. row_id identifies a registration version; source_name/layer_name repeats across file versions. Retire rather than delete referenced registrations.';
 COMMENT ON COLUMN mirror.registry.storage_mode IS 'rows: one registration with per-layer source/staging/history/current relations; external_file: accepted reference versions directly in this registry. Exclusion prevents mixing modes for one logical identity.';
-COMMENT ON COLUMN mirror.registry.checksum_algorithm IS 'Native files use sha256-chain-1m-v1, a bounded-memory 1 MiB block-chain fingerprint documented by mirror_file_evidence; not conventional whole-file SHA256.';
+COMMENT ON COLUMN mirror.registry.checksum_algorithm IS 'Native files use sha256-chain-1m-v1, a bounded-memory 1 MiB block-chain fingerprint documented by file_evidence; not conventional whole-file SHA256.';
 COMMENT ON COLUMN mirror.registry.source_owner IS 'Published dataset ownership wording, supplied explicitly when known; NULL when absent. Never inferred from service provider, fees or license statements.';
 COMMENT ON COLUMN mirror.registry.coverage IS 'Declared geographic/thematic dataset scope in original wording when supplied, not an inferred bounding extent. Captured per import; each accepted row snapshot replaces current membership within this registered scope.';
 COMMENT ON COLUMN mirror.registry.source_revision_at IS 'Latest advertised revision, possibly newer than accepted data. Never evidence of an accepted snapshot revision by itself.';
@@ -94,7 +94,7 @@ CREATE TABLE mirror.source_columns (
 COMMENT ON TABLE mirror.source_columns IS 'Immutable distinct source-column definition sets per registration, including original order/type/comments. Imports reuse an equal structure_version, including older sets; only new structures add rows. Absent historical columns are distinct from supplied NULLs.';
 
 -- Only history closure and registry operational summaries may alter accepted state.
-CREATE FUNCTION utt_pkg.mirror_protect_metadata() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+CREATE FUNCTION mirror.protect_metadata() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 BEGIN
   IF TG_OP='TRUNCATE' THEN RAISE EXCEPTION 'Metadata cannot be truncated.'; END IF;
   IF TG_TABLE_NAME = 'registry' AND TG_OP <> 'DELETE' THEN
@@ -134,19 +134,19 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-CREATE TRIGGER protect_import BEFORE UPDATE OR DELETE ON mirror.import FOR EACH ROW EXECUTE FUNCTION utt_pkg.mirror_protect_metadata();
-CREATE TRIGGER protect_source_columns BEFORE UPDATE OR DELETE ON mirror.source_columns FOR EACH ROW EXECUTE FUNCTION utt_pkg.mirror_protect_metadata();
-CREATE TRIGGER protect_import_truncate BEFORE TRUNCATE ON mirror.import EXECUTE FUNCTION utt_pkg.mirror_protect_metadata();
-CREATE TRIGGER protect_source_columns_truncate BEFORE TRUNCATE ON mirror.source_columns EXECUTE FUNCTION utt_pkg.mirror_protect_metadata();
-CREATE TRIGGER protect_registry_truncate BEFORE TRUNCATE ON mirror.registry EXECUTE FUNCTION utt_pkg.mirror_protect_metadata();
-CREATE TRIGGER protect_registry BEFORE INSERT OR UPDATE OR DELETE ON mirror.registry FOR EACH ROW EXECUTE FUNCTION utt_pkg.mirror_protect_metadata();
-COMMENT ON FUNCTION utt_pkg.mirror_protect_metadata() IS 'Integrity trigger for metadata writes by DBAs: rejects edits/deletion of accepted imports and schema definitions, and rewrites of accepted file state. Returns allowed NEW/OLD row. Example firing the trigger: UPDATE mirror.import SET data_revision_at = now() WHERE status = ''accepted''; -- rejected.';
+CREATE TRIGGER protect_import BEFORE UPDATE OR DELETE ON mirror.import FOR EACH ROW EXECUTE FUNCTION mirror.protect_metadata();
+CREATE TRIGGER protect_source_columns BEFORE UPDATE OR DELETE ON mirror.source_columns FOR EACH ROW EXECUTE FUNCTION mirror.protect_metadata();
+CREATE TRIGGER protect_import_truncate BEFORE TRUNCATE ON mirror.import EXECUTE FUNCTION mirror.protect_metadata();
+CREATE TRIGGER protect_source_columns_truncate BEFORE TRUNCATE ON mirror.source_columns EXECUTE FUNCTION mirror.protect_metadata();
+CREATE TRIGGER protect_registry_truncate BEFORE TRUNCATE ON mirror.registry EXECUTE FUNCTION mirror.protect_metadata();
+CREATE TRIGGER protect_registry BEFORE INSERT OR UPDATE OR DELETE ON mirror.registry FOR EACH ROW EXECUTE FUNCTION mirror.protect_metadata();
+COMMENT ON FUNCTION mirror.protect_metadata() IS 'Integrity trigger for metadata writes by DBAs: rejects edits/deletion of accepted imports and schema definitions, and rewrites of accepted file state. Returns allowed NEW/OLD row. Example firing the trigger: UPDATE mirror.import SET data_revision_at = now() WHERE status = ''accepted''; -- rejected.';
 
 REVOKE ALL ON mirror.registry, mirror.import, mirror.source_columns FROM PUBLIC, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT SELECT ON mirror.registry, mirror.import, mirror.source_columns TO uttdb_reader, uttdb_developer, uttdb_pipeline;
 GRANT ALL ON mirror.registry, mirror.import, mirror.source_columns TO uttdb_dba;
 -- Shared extent calculation for local registration and accepted data, never a WFS scan at registration.
-CREATE OR REPLACE FUNCTION utt_pkg.mirror_layer_extent(layer_table regclass)
+CREATE OR REPLACE FUNCTION mirror.layer_extent(layer_table regclass)
 RETURNS public.geometry
 LANGUAGE plpgsql
 SECURITY INVOKER
@@ -184,14 +184,14 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION utt_pkg.mirror_layer_extent(regclass)
+REVOKE ALL ON FUNCTION mirror.layer_extent(regclass)
   FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.mirror_layer_extent(regclass) TO uttdb_dba;
-COMMENT ON FUNCTION utt_pkg.mirror_layer_extent(regclass) IS
-  'DBA invoker-security helper for file registration and publication. Scans geometry columns and raster tile hulls, transforms known coordinates to EPSG:4326 and returns their bounding geometry without writing data. Returns NULL for empty/nonspatial relations or any nonempty geometry with unknown SRID; other transform errors propagate. Raster bounds include NoData cells. Requires SELECT on the relation. Example: SELECT utt_pkg.mirror_layer_extent(''mirror.buildings_stored''::regclass);';
+GRANT EXECUTE ON FUNCTION mirror.layer_extent(regclass) TO uttdb_dba;
+COMMENT ON FUNCTION mirror.layer_extent(regclass) IS
+  'DBA invoker-security helper for file registration and publication. Scans geometry columns and raster tile hulls, transforms known coordinates to EPSG:4326 and returns their bounding geometry without writing data. Returns NULL for empty/nonspatial relations or any nonempty geometry with unknown SRID; other transform errors propagate. Raster bounds include NoData cells. Requires SELECT on the relation. Example: SELECT mirror.layer_extent(''mirror.buildings_stored''::regclass);';
 
--- One naming rule shared by registration, file staging and provenance partitions.
-CREATE FUNCTION utt_pkg.mirror_object_base(source_name text, layer_name text DEFAULT NULL)
+-- One naming rule shared by registration and file staging.
+CREATE FUNCTION mirror.object_base(source_name text, layer_name text DEFAULT NULL)
 RETURNS text LANGUAGE plpgsql IMMUTABLE SET search_path=pg_catalog AS $$
 DECLARE base_name text;
 BEGIN
@@ -203,10 +203,10 @@ BEGIN
   RETURN base_name;
 END;
 $$;
-COMMENT ON FUNCTION utt_pkg.mirror_object_base(text,text) IS 'Internal pure naming helper for registration, native-file staging and curation partition naming. Normalizes source/layer words to a readable base without hashes or truncation; rejects empty/overlength bases, leaving collisions to registry/catalog uniqueness. Writes nothing and returns text. Use shorter, distinct source names for ambiguous/long names. Example: SELECT utt_pkg.mirror_object_base(''berlin_alkis'',''alkis:land'');';
+COMMENT ON FUNCTION mirror.object_base(text,text) IS 'Internal pure naming helper for registration and native-file staging. Normalizes source/layer words to a readable base without hashes or truncation; rejects empty/overlength bases, leaving collisions to registry/catalog uniqueness. Writes nothing and returns text. Use shorter, distinct source names for ambiguous/long names. Example: SELECT mirror.object_base(''berlin_alkis'',''alkis:land'');';
 
 -- Read each distinct metadata URL once; multiple layers often share one dataset.
-CREATE OR REPLACE FUNCTION utt_pkg.mirror_wfs_revision_dates(
+CREATE OR REPLACE FUNCTION mirror.wfs_revision_dates(
   wfs_url text, capabilities xml DEFAULT NULL
 )
 RETURNS TABLE (layer_name text, source_revision_at timestamptz)
@@ -270,14 +270,14 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION utt_pkg.mirror_wfs_revision_dates(text, xml)
+REVOKE ALL ON FUNCTION mirror.wfs_revision_dates(text, xml)
   FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.mirror_wfs_revision_dates(text, xml) TO uttdb_dba;
-COMMENT ON FUNCTION utt_pkg.mirror_wfs_revision_dates(text, xml) IS
-  'DBA invoker-security metadata reader used by WFS registration and batch refresh. Fetches capabilities unless supplied, follows each distinct first MetadataURL once, and returns each layer name with its latest ISO 19139 dataset citation revision timestamp. Date-only values become midnight UTC. Missing links or unsupported metadata/date fields yield NULL; HTTP, XML and timestamp errors abort. Writes nothing. Does not interpret revision as feature validity. Example: SELECT * FROM utt_pkg.mirror_wfs_revision_dates(''https://gdi.berlin.de/services/wfs/alkis'');';
+GRANT EXECUTE ON FUNCTION mirror.wfs_revision_dates(text, xml) TO uttdb_dba;
+COMMENT ON FUNCTION mirror.wfs_revision_dates(text, xml) IS
+  'DBA invoker-security metadata reader used by WFS registration and batch refresh. Fetches capabilities unless supplied, follows each distinct first MetadataURL once, and returns each layer name with its latest ISO 19139 dataset citation revision timestamp. Date-only values become midnight UTC. Missing links or unsupported metadata/date fields yield NULL; HTTP, XML and timestamp errors abort. Writes nothing. Does not interpret revision as feature validity. Example: SELECT * FROM mirror.wfs_revision_dates(''https://gdi.berlin.de/services/wfs/alkis'');';
 
 -- Define all WFS layers as foreign tables. No local feature data is copied.
-CREATE OR REPLACE FUNCTION utt_pkg.mirror_register_wfs_source(
+CREATE OR REPLACE FUNCTION mirror.register_wfs_source(
   p_server_name text,
   p_wfs_url text
 )
@@ -294,7 +294,7 @@ DECLARE
   v_capabilities xml;
   v_fees text;
   v_access_constraints text[];
-  discovery_schema text := 'discovery_' || utt_pkg.mirror_object_base(p_server_name);
+  discovery_schema text := 'discovery_' || mirror.object_base(p_server_name);
   discovered record;
 BEGIN
   IF p_server_name IS NULL OR btrim(p_server_name) = ''
@@ -374,13 +374,13 @@ BEGIN
   -- The foreign-table catalog retains the original OGR layer name. Register all
   -- layers atomically with discovery and the original published metadata.
   WITH revisions AS MATERIALIZED (
-    SELECT * FROM utt_pkg.mirror_wfs_revision_dates(p_wfs_url, v_capabilities)
+    SELECT * FROM mirror.wfs_revision_dates(p_wfs_url, v_capabilities)
   )
   INSERT INTO mirror.registry (
     source_name, layer_name, source_type, source_url, import_scope, table_base,
     title, description, fees, access_constraints, source_revision_at, extent
   )
-  SELECT p_server_name, layer.option_value, 'wfs', p_wfs_url, 'source', utt_pkg.mirror_object_base(p_server_name,layer.option_value),
+  SELECT p_server_name, layer.option_value, 'wfs', p_wfs_url, 'source', mirror.object_base(p_server_name,layer.option_value),
          metadata.title, metadata.description, v_fees, v_access_constraints, revisions.source_revision_at,
          CASE WHEN bbox.xmin <= bbox.xmax AND bbox.ymin <= bbox.ymax
            AND bbox.xmin >= -180 AND bbox.xmax <= 180
@@ -437,24 +437,24 @@ END;
 $$;
 
 -- Invoker security: the caller supplies its own schema and foreign-server privileges.
-REVOKE ALL ON FUNCTION utt_pkg.mirror_register_wfs_source(text, text)
+REVOKE ALL ON FUNCTION mirror.register_wfs_source(text, text)
   FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline,
        uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.mirror_register_wfs_source(text, text) TO uttdb_dba;
+GRANT EXECUTE ON FUNCTION mirror.register_wfs_source(text, text) TO uttdb_dba;
 GRANT USAGE ON FOREIGN DATA WRAPPER ogr_fdw TO uttdb_dba;
 
-COMMENT ON FUNCTION utt_pkg.mirror_register_wfs_source(text, text) IS
-  'DBA helper: registers all advertised WFS layers as read-only ogr_fdw foreign tables and mirror.registry rows. Records source identity, whole-source selection, first registration and advertised geographic bounds in EPSG:4326 when available; derives _stored names. Published layer titles, abstracts and service-level fees/access constraints are preserved in their original language; absent elements remain NULL. HTTP, XML or layer-matching errors roll back registration. Last import remains NULL until feature storage. Returns foreign table names as regclass values. Registry name limits and relation collisions cause the whole call to roll back, including any newly created server. Linked ISO dataset revision dates populate source_revision_at. Repeated registration is not a refresh. Requires caller database/schema/server and registry-write privileges, normally uttdb_dba membership. Example: SELECT * FROM utt_pkg.mirror_register_wfs_source(''berlin_alkis'', ''https://gdi.berlin.de/services/wfs/alkis'');';
+COMMENT ON FUNCTION mirror.register_wfs_source(text, text) IS
+  'DBA helper: registers all advertised WFS layers as read-only ogr_fdw foreign tables and mirror.registry rows. Records source identity, whole-source selection, first registration and advertised geographic bounds in EPSG:4326 when available; derives _stored names. Published layer titles, abstracts and service-level fees/access constraints are preserved in their original language; absent elements remain NULL. HTTP, XML or layer-matching errors roll back registration. Last import remains NULL until feature storage. Returns foreign table names as regclass values. Registry name limits and relation collisions cause the whole call to roll back, including any newly created server. Linked ISO dataset revision dates populate source_revision_at. Repeated registration is not a refresh. Requires caller database/schema/server and registry-write privileges, normally uttdb_dba membership. Example: SELECT * FROM mirror.register_wfs_source(''berlin_alkis'', ''https://gdi.berlin.de/services/wfs/alkis'');';
 
 -- Manual example; not executed during initialization:
--- SELECT * FROM utt_pkg.mirror_register_wfs_source(
+-- SELECT * FROM mirror.register_wfs_source(
 --   'berlin_alkis', 'https://gdi.berlin.de/services/wfs/alkis'
 -- );
 -- Creates one registry-named _source foreign table per layer.
 
 -- One bounded file-read privilege boundary, shared by registration and source views.
 -- GeoTIFF decoding is in-memory; tiles persist their pixels inside PostgreSQL.
-CREATE OR REPLACE FUNCTION utt_pkg.mirror_read_geotiff(file_path text)
+CREATE OR REPLACE FUNCTION mirror.read_geotiff(file_path text)
 RETURNS TABLE (rid bigint, rast public.raster)
 LANGUAGE plpgsql
 SECURITY DEFINER
@@ -483,15 +483,15 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION utt_pkg.mirror_read_geotiff(text)
+REVOKE ALL ON FUNCTION mirror.read_geotiff(text)
   FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.mirror_read_geotiff(text) TO uttdb_dba;
-COMMENT ON FUNCTION utt_pkg.mirror_read_geotiff(text) IS
-  'DBA-only security-definer file reader used by file registration and raster source views. Reads a trusted self-contained GeoTIFF below /source-files, decodes all pixels in memory and returns rid/rast tiles up to 256x256 with all bands, georeferencing and NoData retained. Writes nothing. Enables only GTiff locally; files larger than 256 MiB are rejected and decoded data must also fit memory. Requires the function owner to have server-file read permission; source files and symlinks must be administered by trusted DBAs. Example: SELECT rid, public.ST_Metadata(rast) FROM utt_pkg.mirror_read_geotiff(''/source-files/heat.tif'');';
+GRANT EXECUTE ON FUNCTION mirror.read_geotiff(text) TO uttdb_dba;
+COMMENT ON FUNCTION mirror.read_geotiff(text) IS
+  'DBA-only security-definer file reader used by file registration and raster source views. Reads a trusted self-contained GeoTIFF below /source-files, decodes all pixels in memory and returns rid/rast tiles up to 256x256 with all bands, georeferencing and NoData retained. Writes nothing. Enables only GTiff locally; files larger than 256 MiB are rejected and decoded data must also fit memory. Requires the function owner to have server-file read permission; source files and symlinks must be administered by trusted DBAs. Example: SELECT rid, public.ST_Metadata(rast) FROM mirror.read_geotiff(''/source-files/heat.tif'');';
 
 -- Register vector layers through OGR, or a GeoTIFF as a lazy raster source view.
 -- GeoTIFFs use their filename as layer_name and a collision-checked naming base.
-CREATE OR REPLACE FUNCTION utt_pkg.mirror_register_file_source(
+CREATE OR REPLACE FUNCTION mirror.register_file_source(
   source_name text, file_path text,
   driver text DEFAULT NULL, open_options text DEFAULT NULL
 )
@@ -506,7 +506,7 @@ DECLARE
   layer record;
   raster_layer text;
   layer_extent public.geometry;
-  discovery_schema text := 'discovery_' || utt_pkg.mirror_object_base(source_name);
+  discovery_schema text := 'discovery_' || mirror.object_base(source_name);
   base_name text;
 BEGIN
   IF source_name IS NULL OR btrim(source_name) = '' OR octet_length(source_name) > 63 THEN
@@ -522,8 +522,8 @@ BEGIN
   IF driver IS NOT NULL AND btrim(driver) = '' THEN
     RAISE EXCEPTION 'driver must be a GDAL driver name or NULL for detection.';
   END IF;
-  IF EXISTS (SELECT FROM mirror.registry r WHERE r.source_name = mirror_register_file_source.source_name)
-    OR EXISTS (SELECT FROM pg_foreign_server s WHERE s.srvname = mirror_register_file_source.source_name) THEN
+  IF EXISTS (SELECT FROM mirror.registry r WHERE r.source_name = register_file_source.source_name)
+    OR EXISTS (SELECT FROM pg_foreign_server s WHERE s.srvname = register_file_source.source_name) THEN
     RAISE EXCEPTION 'Source/server % already exists; registration is not a refresh.', source_name;
   END IF;
 
@@ -533,18 +533,18 @@ BEGIN
     IF open_options IS NOT NULL THEN
       RAISE EXCEPTION 'GeoTIFF open_options are not supported.';
     END IF;
-    base_name := utt_pkg.mirror_object_base(source_name);
+    base_name := mirror.object_base(source_name);
     raster_layer := regexp_replace(file_path, '^.*/', '');
     EXECUTE format(
       'CREATE VIEW mirror.%I WITH (security_invoker = true) AS
-       SELECT rid, rast FROM utt_pkg.mirror_read_geotiff(%L)', base_name || '_source', file_path);
+       SELECT rid, rast FROM mirror.read_geotiff(%L)', base_name || '_source', file_path);
     EXECUTE format('COMMENT ON VIEW mirror.%I IS %L', base_name || '_source',
-      format('Raster source %I.%I; read with utt_pkg.mirror_read_geotiff.', source_name, raster_layer));
+      format('Raster source %I.%I; read with mirror.read_geotiff.', source_name, raster_layer));
     EXECUTE format('REVOKE ALL ON mirror.%I FROM PUBLIC, uttdb_reader, uttdb_developer,
       uttdb_pipeline, uttdb_app_reader, uttdb_app_writer', base_name || '_source');
     EXECUTE format('GRANT SELECT ON mirror.%I TO uttdb_dba', base_name || '_source');
     -- Decode and measure now; registration persists only the extent, not pixels.
-    layer_extent := utt_pkg.mirror_layer_extent(to_regclass(format('mirror.%I', base_name || '_source')));
+    layer_extent := mirror.layer_extent(to_regclass(format('mirror.%I', base_name || '_source')));
     INSERT INTO mirror.registry (source_name, layer_name, source_type, source_url, import_scope, table_base, extent, stable_key)
     VALUES (source_name, raster_layer, 'file', file_path, 'source', base_name, layer_extent, ARRAY['rid']);
     RETURN NEXT to_regclass(format('mirror.%I', base_name || '_source'));
@@ -566,7 +566,7 @@ BEGIN
      OPTIONS (launder_table_names %L, launder_column_names %L)', source_name, discovery_schema, 'false', 'false');
 
   SELECT s.oid INTO server_oid FROM pg_foreign_server s
-  WHERE s.srvname = mirror_register_file_source.source_name;
+  WHERE s.srvname = register_file_source.source_name;
   FOR layer IN
     SELECT c.oid, c.relname, options.option_value AS original_name
     FROM pg_foreign_table f JOIN pg_class c ON c.oid = f.ftrelid
@@ -575,29 +575,29 @@ BEGIN
     WHERE f.ftserver = server_oid AND n.nspname = discovery_schema AND options.option_name = 'layer'
     ORDER BY c.relname
   LOOP
-    base_name := utt_pkg.mirror_object_base(source_name,layer.original_name);
+    base_name := mirror.object_base(source_name,layer.original_name);
     EXECUTE format('ALTER FOREIGN TABLE %I.%I RENAME TO %I', discovery_schema, layer.relname, base_name || '_source');
     EXECUTE format('ALTER FOREIGN TABLE %I.%I SET SCHEMA mirror', discovery_schema, base_name || '_source');
-    layer_extent := utt_pkg.mirror_layer_extent(layer.oid::regclass);
+    layer_extent := mirror.layer_extent(layer.oid::regclass);
     INSERT INTO mirror.registry (source_name, layer_name, source_type, source_url, import_scope, table_base, extent)
     VALUES (source_name, layer.original_name, 'file', file_path, 'source', base_name, layer_extent);
     RETURN NEXT layer.oid::regclass;
   END LOOP;
   EXECUTE format('DROP SCHEMA %I RESTRICT', discovery_schema);
-  IF NOT EXISTS (SELECT FROM mirror.registry r WHERE r.source_name = mirror_register_file_source.source_name) THEN
+  IF NOT EXISTS (SELECT FROM mirror.registry r WHERE r.source_name = register_file_source.source_name) THEN
     RAISE EXCEPTION 'Dataset has no importable vector layers; registration rolled back.';
   END IF;
 END;
 $$;
 
-REVOKE ALL ON FUNCTION utt_pkg.mirror_register_file_source(text, text, text, text)
+REVOKE ALL ON FUNCTION mirror.register_file_source(text, text, text, text)
   FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.mirror_register_file_source(text, text, text, text) TO uttdb_dba;
-COMMENT ON FUNCTION utt_pkg.mirror_register_file_source(text, text, text, text) IS
-  'DBA invoker-security registration: discovers all vector layers in a local dataset below /source-files using ogr_fdw, creates read-only source relations and source_type=file registry rows, and returns their regclass names. GeoTIFF (.tif/.tiff with no driver, or explicit GTiff) registers one registry-named _source view and one layer named after the filename, with stable tile key rid; every read inventories the entire self-contained raster. It validates by decoding but persists no pixels; requires a self-contained file at most 256 MiB and no open_options. Other formats use OGR vector discovery. Registration scans file geometry/raster bounds into registry.extent in EPSG:4326 (NULL for unknown SRID or empty/nonspatial data). No source rows are stored until mirror_store_layer or the batch procedure runs. GDAL detects the driver unless supplied; open_options passes driver-specific options. Published metadata is left NULL because no generic metadata extraction is implemented. Unsupported/unreadable files, empty datasets, name collisions roll back the entire registration. Files remain untouched. Example: SELECT * FROM utt_pkg.mirror_register_file_source(''buildings'', ''/source-files/berlin/buildings.gpkg''); CSV: SELECT * FROM utt_pkg.mirror_register_file_source(''points'', ''/source-files/points.csv'', ''CSV'', ''X_POSSIBLE_NAMES=longitude Y_POSSIBLE_NAMES=latitude'');';
+GRANT EXECUTE ON FUNCTION mirror.register_file_source(text, text, text, text) TO uttdb_dba;
+COMMENT ON FUNCTION mirror.register_file_source(text, text, text, text) IS
+  'DBA invoker-security registration: discovers all vector layers in a local dataset below /source-files using ogr_fdw, creates read-only source relations and source_type=file registry rows, and returns their regclass names. GeoTIFF (.tif/.tiff with no driver, or explicit GTiff) registers one registry-named _source view and one layer named after the filename, with stable tile key rid; every read inventories the entire self-contained raster. It validates by decoding but persists no pixels; requires a self-contained file at most 256 MiB and no open_options. Other formats use OGR vector discovery. Registration scans file geometry/raster bounds into registry.extent in EPSG:4326 (NULL for unknown SRID or empty/nonspatial data). No source rows are stored until store_layer or the batch procedure runs. GDAL detects the driver unless supplied; open_options passes driver-specific options. Published metadata is left NULL because no generic metadata extraction is implemented. Unsupported/unreadable files, empty datasets, name collisions roll back the entire registration. Files remain untouched. Example: SELECT * FROM mirror.register_file_source(''buildings'', ''/source-files/berlin/buildings.gpkg''); CSV: SELECT * FROM mirror.register_file_source(''points'', ''/source-files/points.csv'', ''CSV'', ''X_POSSIBLE_NAMES=longitude Y_POSSIBLE_NAMES=latitude'');';
 
 -- A bounded reader fingerprints native files without decoding or loading them into PostGIS.
-CREATE FUNCTION utt_pkg.mirror_file_evidence(file_path text)
+CREATE FUNCTION mirror.file_evidence(file_path text)
 RETURNS TABLE(file_size bigint, file_checksum text)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog AS $$
 DECLARE offset_bytes bigint := 0; block bytea; fingerprint bytea := ''::bytea; initial record; final_stat record;
@@ -623,16 +623,16 @@ BEGIN
   RETURN QUERY SELECT offset_bytes, encode(sha256(fingerprint), 'hex');
 END;
 $$;
-COMMENT ON FUNCTION utt_pkg.mirror_file_evidence(text) IS 'DBA-only security-definer reader used during native-file staging/acceptance. Returns byte size and bounded-memory checksum without parsing. Algorithm sha256-chain-1m-v1: start empty, hash previous digest concatenated with each 1048576-byte block, then SHA256 the final digest (also defines empty files). Not the conventional whole-file SHA256. Files/symlinks below /source-files require trusted administration and immutable paths. Writes nothing. Example: SELECT * FROM utt_pkg.mirror_file_evidence(''/source-files/climate/v1.nc'');';
+COMMENT ON FUNCTION mirror.file_evidence(text) IS 'DBA-only security-definer reader used during native-file staging/acceptance. Returns byte size and bounded-memory checksum without parsing. Algorithm sha256-chain-1m-v1: start empty, hash previous digest concatenated with each 1048576-byte block, then SHA256 the final digest (also defines empty files). Not the conventional whole-file SHA256. Files/symlinks below /source-files require trusted administration and immutable paths. Writes nothing. Example: SELECT * FROM mirror.file_evidence(''/source-files/climate/v1.nc'');';
 
-CREATE FUNCTION utt_pkg.mirror_register_external_file(source_name text, layer_name text,
+CREATE FUNCTION mirror.register_external_file(source_name text, layer_name text,
   file_path text, file_format text)
 RETURNS bigint LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog AS $$
 DECLARE registration bigint;
 BEGIN
   -- Validate naming/readability now; accepted evidence is captured during staging.
-  PERFORM utt_pkg.mirror_object_base(source_name,layer_name);
-  PERFORM * FROM utt_pkg.mirror_file_evidence(file_path);
+  PERFORM mirror.object_base(source_name,layer_name);
+  PERFORM * FROM mirror.file_evidence(file_path);
   IF file_format IS NULL OR btrim(file_format) = '' THEN RAISE EXCEPTION 'Supply the native file format.'; END IF;
   INSERT INTO mirror.registry(source_name,layer_name,source_type,storage_mode,source_url,file_format,path_namespace)
   VALUES(source_name,layer_name,'file','external_file',file_path,file_format,'database-container:/source-files')
@@ -640,10 +640,10 @@ BEGIN
   RETURN registration;
 END;
 $$;
-COMMENT ON FUNCTION utt_pkg.mirror_register_external_file(text,text,text,text) IS 'DBA registration of one independently versioned native file dataset directly in mirror.registry. Validates readability but stores no payload or accepted history; returns registry row_id. No PostGIS conversion or foreign relation. Example: SELECT utt_pkg.mirror_register_external_file(''climate'',''temperature'',''/source-files/climate/v1.nc'',''NetCDF''); Then SELECT utt_pkg.mirror_store_layer(''climate'',''temperature'');';
+COMMENT ON FUNCTION mirror.register_external_file(text,text,text,text) IS 'DBA registration of one independently versioned native file dataset directly in mirror.registry. Validates readability but stores no payload or accepted history; returns registry row_id. No PostGIS conversion or foreign relation. Example: SELECT mirror.register_external_file(''climate'',''temperature'',''/source-files/climate/v1.nc'',''NetCDF''); Then SELECT mirror.store_layer(''climate'',''temperature'');';
 
 -- Accepted history is append-only except for closing the current system-time bound.
-CREATE FUNCTION utt_pkg.mirror_protect_history() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+CREATE FUNCTION mirror.protect_history() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
 DECLARE accepted_registry bigint;
 BEGIN
   IF TG_OP='TRUNCATE' THEN RAISE EXCEPTION 'Source history cannot be truncated.'; END IF;
@@ -658,10 +658,10 @@ BEGIN
   RETURN NEW;
 END;
 $$;
-COMMENT ON FUNCTION utt_pkg.mirror_protect_history() IS 'Trigger installed by acceptance on each _stored table: checks creating accepted-import ownership, prevents deletion/state rewrites and allows current-range closure only. Returns NEW. Example firing it: DELETE FROM mirror.example_stored; -- rejected.';
+COMMENT ON FUNCTION mirror.protect_history() IS 'Trigger installed by acceptance on each _stored table: checks creating accepted-import ownership, prevents deletion/state rewrites and allows current-range closure only. Returns NEW. Example firing it: DELETE FROM mirror.example_stored; -- rejected.';
 
 -- Capture once. Validation errors or threshold failures retain this exact cache.
-CREATE OR REPLACE FUNCTION utt_pkg.mirror_store_layer(source_name text, layer_name text,
+CREATE OR REPLACE FUNCTION mirror.store_layer(source_name text, layer_name text,
   review boolean DEFAULT false, file_path text DEFAULT NULL, file_format text DEFAULT NULL)
 RETURNS void LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog SET TimeZone='UTC' AS $$
 DECLARE
@@ -672,7 +672,7 @@ DECLARE
 BEGIN
   IF review IS NULL THEN RAISE EXCEPTION 'review must be true or false.'; END IF;
   SELECT r.* INTO STRICT entry FROM mirror.registry r
-  WHERE r.source_name = mirror_store_layer.source_name AND r.layer_name = mirror_store_layer.layer_name
+  WHERE r.source_name = store_layer.source_name AND r.layer_name = store_layer.layer_name
     AND NOT r.retired AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn)) FOR UPDATE;
   IF EXISTS (SELECT FROM mirror.import WHERE registry_row_id = entry.row_id AND status = 'staged') THEN
     RAISE EXCEPTION 'Accept or reject the pending import before fetching again.';
@@ -681,14 +681,14 @@ BEGIN
   VALUES(entry.row_id,'pending',entry.stable_key,review,
     CASE WHEN entry.storage_mode='external_file' THEN coalesce(file_path,entry.source_url) ELSE entry.source_url END,
     entry.coverage) RETURNING import_id INTO attempt;
-  staging := CASE WHEN entry.storage_mode = 'rows' THEN entry.table_base || '_staging' ELSE utt_pkg.mirror_object_base(entry.source_name,entry.layer_name) || '_staging' END;
+  staging := CASE WHEN entry.storage_mode = 'rows' THEN entry.table_base || '_staging' ELSE mirror.object_base(entry.source_name,entry.layer_name) || '_staging' END;
   UPDATE mirror.import SET staging_table = staging WHERE import_id = attempt;
 
   -- Subtransaction makes a failed read inspectable without leaving half a cache.
   BEGIN
     IF entry.storage_mode = 'external_file' THEN
       EXECUTE format('CREATE TABLE mirror.%I AS SELECT $1::text AS file_path, $2::text AS file_format,
-        $3::text AS path_namespace, e.* FROM utt_pkg.mirror_file_evidence($1) e', staging)
+        $3::text AS path_namespace, e.* FROM mirror.file_evidence($1) e', staging)
         USING coalesce(file_path,entry.source_url),coalesce(file_format,entry.file_format),entry.path_namespace;
     ELSE
       IF file_path IS NOT NULL OR file_format IS NOT NULL THEN RAISE EXCEPTION 'File overrides require external_file storage.'; END IF;
@@ -805,7 +805,7 @@ BEGIN
     RAISE NOTICE 'Import % retained in mirror.%: validation %, thresholds %. Accept or reject explicitly.',attempt,staging,errors,failures;
   ELSE
     BEGIN
-      PERFORM utt_pkg.mirror_accept_layer(source_name,layer_name,true);
+      PERFORM mirror.accept_layer(source_name,layer_name,true);
     EXCEPTION WHEN OTHERS THEN
       UPDATE mirror.import SET validation_errors=array_append(validation_errors,SQLERRM) WHERE import_id=attempt;
       RAISE WARNING 'Import % remains staged after publication failed: %',attempt,SQLERRM;
@@ -813,9 +813,9 @@ BEGIN
   END IF;
 END;
 $$;
-COMMENT ON FUNCTION utt_pkg.mirror_store_layer(text,text,boolean,text,text) IS 'DBA staging entry point for row adapters and native-file registry datasets. Returns void; caches one snapshot/manifest and import evidence. Invalid data/threshold failures remain staged, read failures are recorded failed, and accepted state stays unchanged. Automatically accepts valid threshold-passing data unless review=true. file_path/file_format override only the next native-file manifest. Every row import is a full snapshot of the registered source scope; accepting it closes missing source versions. Partial/delta imports are unsupported. Threshold failures retain staging for explicit review. Revision remains NULL without reliable snapshot association. Example: SELECT utt_pkg.mirror_store_layer(''berlin_alkis'',''alkis:bezirk'',review=>true); Native replacement: SELECT utt_pkg.mirror_store_layer(''climate'',''temperature'',file_path=>''/source-files/climate/v2.nc'');';
+COMMENT ON FUNCTION mirror.store_layer(text,text,boolean,text,text) IS 'DBA staging entry point for row adapters and native-file registry datasets. Returns void; caches one snapshot/manifest and import evidence. Invalid data/threshold failures remain staged, read failures are recorded failed, and accepted state stays unchanged. Automatically accepts valid threshold-passing data unless review=true. file_path/file_format override only the next native-file manifest. Every row import is a full snapshot of the registered source scope; accepting it closes missing source versions. Partial/delta imports are unsupported. Threshold failures retain staging for explicit review. Revision remains NULL without reliable snapshot association. Example: SELECT mirror.store_layer(''berlin_alkis'',''alkis:bezirk'',review=>true); Native replacement: SELECT mirror.store_layer(''climate'',''temperature'',file_path=>''/source-files/climate/v2.nc'');';
 
-CREATE OR REPLACE FUNCTION utt_pkg.mirror_accept_layer(source_name text,layer_name text,
+CREATE OR REPLACE FUNCTION mirror.accept_layer(source_name text,layer_name text,
   automatic boolean DEFAULT false)
 RETURNS void LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog SET TimeZone='UTC' AS $$
 DECLARE
@@ -824,8 +824,8 @@ DECLARE
   key_sql text; null_sql text; invalid boolean; at_time timestamptz; new_registry bigint;
   changed_sql text; schema_changed_imports bigint[];
 BEGIN
-  SELECT r.* INTO STRICT entry FROM mirror.registry r WHERE r.source_name=mirror_accept_layer.source_name
-    AND r.layer_name=mirror_accept_layer.layer_name AND NOT r.retired
+  SELECT r.* INTO STRICT entry FROM mirror.registry r WHERE r.source_name=accept_layer.source_name
+    AND r.layer_name=accept_layer.layer_name AND NOT r.retired
     AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn)) FOR UPDATE;
   SELECT * INTO STRICT pending FROM mirror.import WHERE registry_row_id=entry.row_id AND status='staged' FOR UPDATE;
   IF automatic AND (pending.manual_review OR cardinality(pending.validation_errors)>0 OR cardinality(pending.threshold_failures)>0) THEN
@@ -839,7 +839,7 @@ BEGIN
     EXECUTE format('SELECT count(*)<>1 FROM %s',stage_oid::regclass) INTO invalid;
     IF invalid THEN RAISE EXCEPTION 'File manifest requires exactly one file.'; END IF;
     EXECUTE format('SELECT * FROM %s',stage_oid::regclass) INTO manifest;
-    SELECT * INTO evidence FROM utt_pkg.mirror_file_evidence(manifest.file_path);
+    SELECT * INTO evidence FROM mirror.file_evidence(manifest.file_path);
     IF (evidence.file_size,evidence.file_checksum) IS DISTINCT FROM (manifest.file_size,manifest.file_checksum)
       OR manifest.file_format IS NULL OR btrim(manifest.file_format)='' OR manifest.path_namespace IS DISTINCT FROM entry.path_namespace THEN
       RAISE EXCEPTION 'Staged file changed or manifest is invalid; reject and stage again.';
@@ -912,8 +912,8 @@ BEGIN
         ADD CHECK(NOT isempty(utt_txn) AND NOT lower_inf(utt_txn) AND isfinite(lower(utt_txn))
           AND lower_inc(utt_txn) AND NOT upper_inc(utt_txn) AND (upper_inf(utt_txn) OR isfinite(upper(utt_txn)))),
         ADD EXCLUDE USING gist(utt_key WITH =,utt_txn WITH &&)',entry.stored_table);
-      EXECUTE format('CREATE TRIGGER protect_history BEFORE INSERT OR UPDATE OR DELETE ON mirror.%I FOR EACH ROW EXECUTE FUNCTION utt_pkg.mirror_protect_history(%L)',entry.stored_table,entry.row_id::text);
-      EXECUTE format('CREATE TRIGGER protect_history_truncate BEFORE TRUNCATE ON mirror.%I EXECUTE FUNCTION utt_pkg.mirror_protect_history()',entry.stored_table);
+      EXECUTE format('CREATE TRIGGER protect_history BEFORE INSERT OR UPDATE OR DELETE ON mirror.%I FOR EACH ROW EXECUTE FUNCTION mirror.protect_history(%L)',entry.stored_table,entry.row_id::text);
+      EXECUTE format('CREATE TRIGGER protect_history_truncate BEFORE TRUNCATE ON mirror.%I EXECUTE FUNCTION mirror.protect_history()',entry.stored_table);
       EXECUTE format('CREATE INDEX ON mirror.%I(utt_key) WHERE upper_inf(utt_txn)',entry.stored_table);
       history_oid := to_regclass(format('mirror.%I',entry.stored_table));
     ELSE
@@ -976,32 +976,32 @@ BEGIN
     EXECUTE format('ALTER VIEW mirror.%I OWNER TO uttdb_dba',entry.table_base);
     EXECUTE format('ANALYZE %s',history_oid::regclass);
     UPDATE mirror.registry SET last_imported_at=at_time,
-      extent=utt_pkg.mirror_layer_extent(to_regclass(format('mirror.%I',entry.table_base))) WHERE row_id=entry.row_id;
+      extent=mirror.layer_extent(to_regclass(format('mirror.%I',entry.table_base))) WHERE row_id=entry.row_id;
   END IF;
   EXECUTE format('DROP TABLE %s',stage_oid::regclass);
 END;
 $$;
-COMMENT ON FUNCTION utt_pkg.mirror_accept_layer(text,text,boolean) IS 'DBA acceptance of cached staging without re-fetch. Revalidates captured layout, keys and raster integrity or exact native-file checksum. Closes changed and missing source versions from the full snapshot and inserts replacements at one timestamp; no-ops still record immutable imports. Manual acceptance overrides thresholds only. External-file reference versions remain in registry. Returns void; exceptions roll back publication and retain staging. Example: SELECT utt_pkg.mirror_accept_layer(''berlin_alkis'',''alkis:bezirk''); automatic=true is reserved for validated automatic staging.';
+COMMENT ON FUNCTION mirror.accept_layer(text,text,boolean) IS 'DBA acceptance of cached staging without re-fetch. Revalidates captured layout, keys and raster integrity or exact native-file checksum. Closes changed and missing source versions from the full snapshot and inserts replacements at one timestamp; no-ops still record immutable imports. Manual acceptance overrides thresholds only. External-file reference versions remain in registry. Returns void; exceptions roll back publication and retain staging. Example: SELECT mirror.accept_layer(''berlin_alkis'',''alkis:bezirk''); automatic=true is reserved for validated automatic staging.';
 
-CREATE FUNCTION utt_pkg.mirror_reject_layer(source_name text,layer_name text)
+CREATE FUNCTION mirror.reject_layer(source_name text,layer_name text)
 RETURNS void LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE entry mirror.registry%ROWTYPE; pending mirror.import%ROWTYPE;
 BEGIN
-  SELECT r.* INTO STRICT entry FROM mirror.registry r WHERE r.source_name=mirror_reject_layer.source_name
-    AND r.layer_name=mirror_reject_layer.layer_name AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn)) FOR UPDATE;
+  SELECT r.* INTO STRICT entry FROM mirror.registry r WHERE r.source_name=reject_layer.source_name
+    AND r.layer_name=reject_layer.layer_name AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn)) FOR UPDATE;
   SELECT * INTO STRICT pending FROM mirror.import WHERE registry_row_id=entry.row_id AND status='staged' FOR UPDATE;
   EXECUTE format('DROP TABLE mirror.%I',pending.staging_table);
   UPDATE mirror.import SET status='rejected',staging_table=NULL WHERE import_id=pending.import_id;
 END;
 $$;
-COMMENT ON FUNCTION utt_pkg.mirror_reject_layer(text,text) IS 'DBA rejection of a pending import. Drops its staging cache, marks import rejected and preserves accepted data and original files. Returns void. Example: SELECT utt_pkg.mirror_reject_layer(''berlin_alkis'',''alkis:bezirk'');';
+COMMENT ON FUNCTION mirror.reject_layer(text,text) IS 'DBA rejection of a pending import. Drops its staging cache, marks import rejected and preserves accepted data and original files. Returns void. Example: SELECT mirror.reject_layer(''berlin_alkis'',''alkis:bezirk'');';
 
-CREATE OR REPLACE FUNCTION utt_pkg.mirror_unregister_source(source_name text,layer_name text DEFAULT NULL)
+CREATE OR REPLACE FUNCTION mirror.unregister_source(source_name text,layer_name text DEFAULT NULL)
 RETURNS void LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE entry mirror.registry%ROWTYPE; found_entry boolean := false;
 BEGIN
-  FOR entry IN SELECT r.* FROM mirror.registry r WHERE r.source_name=mirror_unregister_source.source_name
-    AND (mirror_unregister_source.layer_name IS NULL OR r.layer_name=mirror_unregister_source.layer_name)
+  FOR entry IN SELECT r.* FROM mirror.registry r WHERE r.source_name=unregister_source.source_name
+    AND (unregister_source.layer_name IS NULL OR r.layer_name=unregister_source.layer_name)
     AND NOT r.retired AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn)) ORDER BY r.layer_name FOR UPDATE
   LOOP
     found_entry:=true;
@@ -1013,9 +1013,9 @@ BEGIN
   IF NOT found_entry THEN RAISE EXCEPTION 'No active matching registration.'; END IF;
 END;
 $$;
-COMMENT ON FUNCTION utt_pkg.mirror_unregister_source(text,text) IS 'DBA retirement, replacing destructive unregister semantics. Marks matching active registrations retired and stops refresh; preserves registry/import/history rows, source adapters and original files. Does not claim source withdrawal. Reject/accept staging first. Returns void. Example: SELECT utt_pkg.mirror_unregister_source(''berlin_alkis'',''alkis:bezirk'');';
+COMMENT ON FUNCTION mirror.unregister_source(text,text) IS 'DBA retirement, replacing destructive unregister semantics. Marks matching active registrations retired and stops refresh; preserves registry/import/history rows, source adapters and original files. Does not claim source withdrawal. Reject/accept staging first. Returns void. Example: SELECT mirror.unregister_source(''berlin_alkis'',''alkis:bezirk'');';
 
-CREATE OR REPLACE PROCEDURE utt_pkg.mirror_update_registered_sources(review boolean DEFAULT false,
+CREATE OR REPLACE PROCEDURE mirror.update_registered_sources(review boolean DEFAULT false,
   source_type text DEFAULT NULL,skip_interval interval DEFAULT interval '1 hour')
 LANGUAGE plpgsql SECURITY INVOKER AS $$
 DECLARE selected record; entry mirror.registry%ROWTYPE; checked_source text;
@@ -1024,14 +1024,14 @@ BEGIN
     OR (source_type IS NOT NULL AND source_type NOT IN ('wfs','file')) THEN RAISE EXCEPTION 'Invalid refresh options.'; END IF;
   FOR selected IN SELECT r.source_name,r.layer_name FROM mirror.registry r
     WHERE NOT r.retired AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn))
-      AND (mirror_update_registered_sources.source_type IS NULL OR r.source_type=mirror_update_registered_sources.source_type)
+      AND (update_registered_sources.source_type IS NULL OR r.source_type=update_registered_sources.source_type)
     ORDER BY r.source_name,r.layer_name
   LOOP
     SELECT r.* INTO entry FROM mirror.registry r WHERE r.source_name=selected.source_name AND r.layer_name=selected.layer_name
       AND NOT r.retired AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn)) FOR UPDATE;
     IF FOUND THEN
       IF entry.source_type='wfs' AND checked_source IS DISTINCT FROM entry.source_name THEN
-        WITH revisions AS MATERIALIZED(SELECT * FROM utt_pkg.mirror_wfs_revision_dates(entry.source_url))
+        WITH revisions AS MATERIALIZED(SELECT * FROM mirror.wfs_revision_dates(entry.source_url))
         UPDATE mirror.registry r SET source_revision_at=(SELECT d.source_revision_at FROM revisions d WHERE d.layer_name=r.layer_name)
         WHERE r.source_name=entry.source_name AND r.storage_mode='rows';
         checked_source:=entry.source_name;
@@ -1039,19 +1039,19 @@ BEGIN
       IF EXISTS(SELECT FROM mirror.import WHERE registry_row_id=entry.row_id AND status='staged') THEN
         RAISE NOTICE 'Skipping %.%: import awaits acceptance/rejection.',entry.source_name,entry.layer_name;
       ELSIF skip_interval IS NULL OR entry.last_imported_at IS NULL OR entry.last_imported_at<=clock_timestamp()-skip_interval THEN
-        PERFORM utt_pkg.mirror_store_layer(entry.source_name,entry.layer_name,review);
+        PERFORM mirror.store_layer(entry.source_name,entry.layer_name,review);
       END IF;
     END IF;
     COMMIT;
   END LOOP;
 END;
 $$;
-COMMENT ON PROCEDURE utt_pkg.mirror_update_registered_sources(boolean,text,interval) IS 'DBA top-level batch, outside BEGIN/COMMIT: refreshes active row/file registrations in stable order, committing each dataset independently. Skips pending staging and recently accepted imports; skip_interval NULL disables freshness skip. Refreshes WFS advertised revisions separately from accepted evidence. Failed source reads persist failed attempts; earlier commits survive later errors. Returns no result. Example: CALL utt_pkg.mirror_update_registered_sources(review=>true,skip_interval=>NULL);';
+COMMENT ON PROCEDURE mirror.update_registered_sources(boolean,text,interval) IS 'DBA top-level batch, outside BEGIN/COMMIT: refreshes active row/file registrations in stable order, committing each dataset independently. Skips pending staging and recently accepted imports; skip_interval NULL disables freshness skip. Refreshes WFS advertised revisions separately from accepted evidence. Failed source reads persist failed attempts; earlier commits survive later errors. Returns no result. Example: CALL mirror.update_registered_sources(review=>true,skip_interval=>NULL);';
 
 -- Explicit privilege boundaries override the broad initialization defaults in 902.
 DO $$ DECLARE routine record; BEGIN
   FOR routine IN SELECT p.oid::regprocedure AS signature FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-    WHERE n.nspname='utt_pkg' AND p.proname LIKE 'mirror\_%' ESCAPE '\'
+    WHERE n.nspname='mirror'
   LOOP
     EXECUTE format('REVOKE ALL ON ROUTINE %s FROM PUBLIC,uttdb_reader,uttdb_developer,uttdb_pipeline,uttdb_app_reader,uttdb_app_writer',routine.signature);
     EXECUTE format('GRANT EXECUTE ON ROUTINE %s TO uttdb_dba',routine.signature);

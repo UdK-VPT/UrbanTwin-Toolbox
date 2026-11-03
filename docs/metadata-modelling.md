@@ -1,7 +1,7 @@
-# Metadata, source history and provenance
+# Metadata, mirror history and snapshot curation
 
 UTT captures heterogeneous source data in `mirror` and optionally curates it into
-`utt` domain tables. Original attributes and geometry remain available; curation
+`curation` snapshot tables. Original attributes and geometry remain available; curation
 harmonizes the data needed by an application. CityGML/3DCityDB provides an
 interoperability interface for suitable data.
 
@@ -15,17 +15,19 @@ implementation rules.
 
 ## Storage responsibilities
 
-Five shared metadata tables connect source identity, accepted observations and
-selected contributions. Source/import metadata lives in `mirror`; domain metadata
-lives in `utt`. Cross-schema routines live in `utt_pkg`.
+Four metadata tables describe accepted sources and the current curated build.
+Source/import metadata lives in `mirror`; dataset build identity lives in `curation`.
+Mirror routines live alongside their data in `mirror`, without a `mirror_` prefix.
+Shared administration helpers live in `utt_pkg`; project procedures and tables
+live together in `curation`, initialized by `913-curation.sql`.
 
 | Table | Responsibility |
 |---|---|
 | `mirror.registry` | Dataset/layer identity `(source_name, layer_name)`, access/location, coverage, ownership, published metadata and ingestion settings. External-file datasets also keep their accepted reference versions here. |
 | `mirror.import` | One ingestion attempt: captured location, coverage, revision/schema evidence, validation results and status (`staged`, `accepted`, `rejected`, `failed`). Acceptance makes the record immutable. |
 | `mirror.source_columns` | Distinct immutable source-column sets needed to interpret history; imports reuse a matching `structure_version` rather than copying definitions each time. |
-| `utt.curation_mapping` | Candidate contributions: source registration/columns, matching ID, target attribute group, priority, approved SQL rule and activation. |
-| `utt.curation_provenance` | Actual selected contributions: target version, mapping, exact source version/key, accepted input, observation time and selection reason. |
+
+| `curation.dataset_build` | Current successful dataset recipe, Git revision when supplied, actual mirror snapshot, region and completion time. Updated atomically with output tables; no build history. |
 
 Registry references use immutable `row_id` values. A database-row dataset has one
 registration; an external-file dataset can have several reference versions with
@@ -40,9 +42,9 @@ Each database-row dataset has these objects, using a unique registry-controlled 
 | `mirror.<base>_stored` | Accepted source history: original state plus immutable `row_id`, stable-key representation `utt_key`, `utt_txn` and creating `import_id`. |
 | `mirror.<base>` | Read-only current view over `_stored`; no duplicate storage. |
 
-Curated city, district, block, plot, building and address tables hold typed domain
-state, stable logical IDs, immutable version IDs and system time. Spatial relation
-tables connect endpoint versions rather than repeatable logical IDs.
+Curated city, district, block, plot, building and address tables are ordinary typed
+snapshot tables. Three n:m relationship tables reference their snapshot-local row
+IDs. They share the `berlin_` prefix and have no temporal modelling.
 
 ## From source to accepted history
 
@@ -54,8 +56,8 @@ flowchart TD
     C -->|Review pending| B
     C -->|Reject| E[Discard staging]
     D --> F[Current view and historical queries]
-    D --> G[Optional domain curation]
-    G --> H[Domain versions and selected provenance]
+    D --> G[SQL snapshot procedures]
+    G --> H[Ordinary curated tables and current build identity]
 ```
 
 Ingestion compares explicitly configured stable keys and complete source state,
@@ -77,7 +79,7 @@ Acceptance closes current source versions absent from that snapshot; historical 
 remain. Count thresholds hold unusually changed or empty updates for review before
 publication. Rejection and failed reads leave accepted state untouched. Partial/delta
 imports are unsupported. Source withdrawal records disappearance from the source,
-not demolition or automatic retirement of curated state.
+not demolition. A snapshot rebuild selects the source membership at its requested time.
 
 Accepted revision evidence is separate from the latest advertised revision and is
 NULL without a reliable association to the captured data. Reusable source-column definitions preserve
@@ -123,93 +125,49 @@ accepted input for a source version. Later unchanged imports remain visible in
 import history without changing that version or its creating import.
 
 Source dates remain ordinary attributes, with no generic `source_valid` or inferred
-valid-time ranges. In the Berlin mappings, block `source_date` preserves `datum`,
+valid-time ranges. In the Berlin recipe, block `source_date` preserves `datum`,
 plot `source_date` preserves `beg`, and address `address_date` preserves `aufn_dt`.
 Changed mapped dates count as changed state even when the date moves backwards.
-Advertised revisions and provenance changes alone do not create domain versions.
+Advertised revisions do not date real-world changes or change snapshot selection.
 
-## Curation and selected origins
+## Snapshot curation and build identity
 
-Mappings describe candidate contributions to **atomic attribute groups**. For
-example, geometry and function may be selected together while height has independent
-candidates. Active groups are equal or disjoint. Lower numeric priority wins,
-followed by mapping ID and stable source key. Priority expresses preference, not
-accuracy. Mapping definitions are immutable except for activation; revised behavior
-has a new approved SQL rule identity rather than executable SQL in metadata.
+The Berlin SQL procedures select accepted mirror records at one `timestamptz`,
+optionally restricted to an intersecting region. Each functional recipe has a fixed
+snapshot default and an explicit override. Required columns are checked against the
+accepted schema at that timestamp, not merely against retained physical columns or
+the latest current view. Historical NULL values remain NULL; source dates retain
+their original meaning. Incompatible CRS, identifiers or types are not silently
+harmonized.
 
-| Rule family | Eligibility and behavior |
-|---|---|
-| `berlin_<entity>_v1` | Established Berlin transformations; usable geometry required, descriptive values may be NULL. |
-| `direct_<entity>_v1` | Named source/target column pairs cast to target types; every group member must be non-NULL. |
-| `sum_<entity>_v1` | Numeric sums by explicit matching ID; only complete contributors participate, and every contributor is retained in provenance. |
+Entity procedures prepare indexed ordinary temporary tables. A subsequent procedure
+uses those curated tables to build building/block, building/plot and plot/block
+relationships, retaining genuine n:m matches. Each unique pair has a fraction:
+intersection area divided by the first endpoint's area, rounded to three decimals,
+retained above 0.02. Spatial-index probes restrict candidates before intersections.
+No historical endpoint combinations are calculated.
 
-Columns/types, units, code meanings, CRS and matching IDs must be compatible;
-automatic CRS conversion is not inferred. If required columns disappear from the
-latest accepted schema, the mapping becomes ineligible even if physical history
-still contains those columns. Without eligible replacements, existing state and
-its exact former origins remain. Clearing values, retirement, splits, merges and
-cross-source identity changes need explicit domain semantics.
+One restricted entry point installs all cooperating tables and their
+`curation.dataset_build` row in a single transaction. Outputs have no system-time
+ranges, entity history or historical provenance partitions. A later rebuild replaces
+them; a failed build preserves the previous complete dataset. Build snapshot, recipe
+identity and completion time are distinct facts, not three temporal axes.
 
-| Curation result | Stored effect |
-|---|---|
-| Managed content changed | Close the current domain version, insert its replacement, and record every group, including carried origins. |
-| Same content, different selected origins | Keep the domain version and append complete replacement observations for changed groups. |
-| Same content and selection | No new domain versions or provenance observations. |
-
-Provenance stores one selected contributor per source record/group observation,
-not per attribute or rejected candidate. Each contributor identifies its immutable
-mapping, exact source version, named stable key, accepted import and selection
-reason. Carried origins retain their original accepted input even when that input
-is no longer current. Every observation contains the full selected contributor set.
-
-`target_table regclass` and `target_row_id` identify the target version without
-per-entity provenance columns. This is a validated generic reference, not a target
-foreign key: the trigger checks mapping/table agreement, locks/checks the row and
-requires observation time within its system-time range. History protection prevents
-target deletion/truncation. Per-source provenance partitions enforce genuine
-source-history foreign keys; native-file contributors reference registry versions.
-
-Changing group boundaries means deactivating former mappings and installing
-replacements in one transaction, then re-curating. Eligible replacement groups must
-fully cover each former group; partial regrouping is rejected. New observations
-supersede overlapping groups without reinterpreting historical definitions.
-
-Mapping edits and domain/relation writes share an advisory transaction lock.
-Curation also holds an exclusive lock on `mirror.registry` while selecting accepted
-inputs: existing writers finish first, new publications wait, and plain readers
-remain allowed. Entity changes and provenance commit together through restricted
-curation routines rather than direct pipeline writes.
-
-## Current and historical queries
+The build row records only current successful identity, including actual snapshot,
+region and caller-supplied Git revision when known. It does not assert per-record
+lineage or exact reproduction without retained SQL revisions, mirror history and
+compatible dependencies. Publication interfaces and derived-source lineage are not
+implemented.
 
 ```sql
-SELECT * FROM utt.building_current;
-SELECT * FROM utt_pkg.building_at(TIMESTAMPTZ '2026-10-01 12:00:00+00');
-SELECT * FROM utt_pkg.provenance_at(
-  'building', TIMESTAMPTZ '2026-10-01 12:00:00+00');
+SELECT * FROM mirror.berlin_alkis_alkis_land_stored
+WHERE utt_txn @> TIMESTAMPTZ '2026-11-01 00:00:00+00';
+-- Choose a compatible timestamp actually represented in your mirror history:
+CALL curation.curate_berlin_20261101(TIMESTAMPTZ '2026-11-01 00:00:00+00');
+SELECT * FROM curation.dataset_build;
+SELECT * FROM curation.berlin_relation_building_plot;
 ```
 
-As-of provenance selects the target version at the requested time and the latest
-complete observation for each group using historical mapping definitions. Keeping
-multiple contributors separate from flat entity rows avoids multiplying counts or
-areas in joins.
-
-### Spatial relations
-
-The three relation tables derive temporal context from overlapping endpoint
-`utt_txn` ranges, with no additional time axis. Relation curation backfills missed
-historical pairs and inserts only absent pairs. Intersection fractions are rounded
-to three decimals, then must exceed 0.02. It runs explicitly after endpoint curation;
-entity writes do not update relation storage automatically.
-
-```sql
-SELECT utt_pkg.curate_relation('building_plot');
-SELECT * FROM utt.relation_bldg_plot_current;
-SELECT * FROM utt_pkg.relation_at(
-  'building_plot', TIMESTAMPTZ '2026-10-01 12:00:00+00');
-```
-
-History begins at the first accepted observation. It preserves observed state and
-selected origins, not unseen remote changes, every service response or byte-exact
-source payloads without archives. [UTTDB](uttdb.md#persistence) links the rollback-only
-SQL checks; these run against disposable initialized databases.
+History begins at the first accepted observation. Mirror cannot recover unobserved
+remote changes, every historical service response or native bytes without retained
+files. [UTTDB](uttdb.md#persistence) links the disposable-database checks.

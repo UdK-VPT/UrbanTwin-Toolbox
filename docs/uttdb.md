@@ -10,40 +10,28 @@ Image versions and build settings live in `compose.yml`.
 | Schema | Purpose |
 | --- | --- |
 | `citydb` | 3DCityDB's 3D city model |
-| `mirror` | Source registry, import/schema evidence and accepted source history |
-| `utt` | Curated domain versions, mappings, selected provenance and spatial relations |
-| `utt_pkg` | SQL ingestion, curation and inspection routines |
+| `mirror` | All source data, metadata, ingestion routines and accepted history |
+| `utt_pkg` | Shared administration helpers, including developer sandbox provisioning |
+| `curation` | Project SQL procedures, snapshot tables and current build identity |
 
-[Initialization SQL](../uttdb/init/) creates schemas, extensions and NOLOGIN group
-roles: `uttdb_dba`, `uttdb_reader`, `uttdb_developer`, `uttdb_pipeline`,
-`uttdb_app_reader` and `uttdb_app_writer`. Give individual logins appropriate group
-membership. Developers use sandbox schemas, provisioned by a DBA with
-`SELECT utt_pkg.create_developer_sandbox('existing_login');`.
-Routine comments in pgAdmin document usage and permissions.
+[Initialization SQL](../uttdb/init/) creates extensions and NOLOGIN group roles:
+`uttdb_dba`, `uttdb_reader`, `uttdb_developer`, `uttdb_pipeline`,
+`uttdb_app_reader` and `uttdb_app_writer`. A DBA provisions developer sandboxes with
+`SELECT utt_pkg.create_developer_sandbox('existing_login');`. Developers receive read
+access and work in their sandbox; pipeline users execute the Berlin build procedure
+without direct curated-table writes. App writers receive no curation entry point.
 
-[912-utt-buildings.sql](../uttdb/init/912-utt-buildings.sql) creates empty city,
-district, block, plot, building and address tables. Each uses immutable `row_id`,
-repeatable logical IDs and `utt_txn` system-time history. Source dates remain
-ordinary attributes. Everyday readers use `utt.<entity>_current`;
-`utt_pkg.<entity>_at(timestamp)` reads earlier versions. Pipeline roles invoke
-curation routines and have no direct domain or provenance writes.
+Core files `901`–`903` initialize mirror and infrastructure without `curation`.
+`913-curation.sql` adds the optional Berlin demonstration: six ordinary entity tables and
+three n:m relationship tables, all prefixed `curation.berlin_`. Each entity has a
+snapshot-local `row_id` and unique official identity. Relationship rows reference
+endpoint `row_id` values with foreign keys and unique pairs. These IDs may be
+reassigned on rebuild; do not treat them as durable cross-build identifiers.
+Source keys and official identifiers retain their separate meanings.
 
-The three relation tables—`utt.relation_bldg_block`, `utt.relation_bldg_plot` and
-`utt.relation_plot_block`—connect immutable endpoint versions. Their temporal
-context comes from the endpoints rather than independent time ranges. There is no
-curated postcode entity or postcode relation table. The tables hold all versions; their ordinary read-only views select current versions
-without copying data and reflect committed changes automatically. The
-[database reference](database-reference.md) lists every table/view pair and its
-maintenance responsibility. See the [metadata model](metadata-modelling.md) for
-versioning and selection behavior and the [glossary](glossary.md) for terminology.
-
-Every geometry column has a GiST index, including `block.centroid`. The version-aware
-relation tables use `row_id` foreign keys. Stable IDs retained as attributes elsewhere
-are not foreign keys because their temporal targets can contain multiple versions of
-one logical object. Unknown relationships may remain NULL.
-`building.source_fid` is a technical source key rather than a stable relationship
-target; logical relationship attributes use official identifiers.
-Identifiers without a corresponding UTT table remain unconstrained.
+Geometry columns have GiST indexes, including the block centroid. Curated tables
+have no system-time ranges or historical readers. To obtain an older dataset,
+rebuild from retained mirror history with an explicit snapshot timestamp.
 
 ## Mirror workflow
 
@@ -56,11 +44,11 @@ overlength or colliding names are rejected rather than silently shortened or suf
 Inspect the registry for actual names; use shorter, distinct source names if needed.
 
 ```sql
-SELECT * FROM utt_pkg.mirror_register_wfs_source(
+SELECT * FROM mirror.register_wfs_source(
   'berlin_alkis', 'https://gdi.berlin.de/services/wfs/alkis');
 UPDATE mirror.registry SET stable_key = ARRAY['name']
 WHERE source_name = 'berlin_alkis' AND layer_name = 'alkis:bezirk';
-SELECT utt_pkg.mirror_store_layer('berlin_alkis', 'alkis:bezirk');
+SELECT mirror.store_layer('berlin_alkis', 'alkis:bezirk');
 SELECT source_name, layer_name, table_base, stored_table, last_imported_at
 FROM mirror.registry WHERE storage_mode = 'rows';
 ```
@@ -79,10 +67,10 @@ PostgreSQL. Original files belong in `uttdb/source-files/`, mounted read-only at
 `/source-files`; preserve sidecars and grant the database OS user read access.
 
 ```sql
-SELECT * FROM utt_pkg.mirror_register_file_source(
+SELECT * FROM mirror.register_file_source(
   'buildings', '/source-files/buildings.gpkg');
 -- Inspect discovered layers, then configure stable_key before storing them.
-SELECT * FROM utt_pkg.mirror_register_file_source(
+SELECT * FROM mirror.register_file_source(
   'heat', '/source-files/heat.tif');
 ```
 
@@ -100,13 +88,13 @@ validation problems or reject the cache and stage again. Manual acceptance can
 bypass thresholds but still rechecks keys, captured structure and raster integrity.
 
 ```sql
-SELECT utt_pkg.mirror_store_layer('berlin_alkis', 'alkis:bezirk', review => true);
+SELECT mirror.store_layer('berlin_alkis', 'alkis:bezirk', review => true);
 SELECT import_id, registry_row_id, status, staging_table,
        validation_errors, threshold_failures
 FROM mirror.import WHERE status = 'staged';
 -- Inspect the indicated mirror staging table, then choose one:
-SELECT utt_pkg.mirror_accept_layer('berlin_alkis', 'alkis:bezirk');
--- SELECT utt_pkg.mirror_reject_layer('berlin_alkis', 'alkis:bezirk');
+SELECT mirror.accept_layer('berlin_alkis', 'alkis:bezirk');
+-- SELECT mirror.reject_layer('berlin_alkis', 'alkis:bezirk');
 ```
 
 Acceptance compares all source attributes, including geometry and source dates.
@@ -123,13 +111,13 @@ snapshot. This includes automatically accepted updates within the count threshol
 An unusually small or empty update stays staged for review; rejection leaves current
 state untouched, while explicit acceptance closes the missing versions. Failed reads
 never publish absence. Historical rows remain stored, and source disappearance does
-not automatically retire curated entities.
+not describe real-world demolition; a later snapshot rebuild reflects source absence.
 
 Partial/delta ingestion is unsupported. Registered `coverage` describes the dataset
 scope and is captured per import, along with source location; it cannot be overridden
 per attempt. Changing an accepted dataset's scope requires a distinct registration.
 `source_owner` retains supplied published wording and otherwise stays NULL.
-Retirement via `mirror_unregister_source()` stops refresh while preserving registry,
+Retirement via `unregister_source()` stops refresh while preserving registry,
 imports, history and original files; it does not itself withdraw source objects.
 
 `mirror.source_columns` stores column order, exposed types and available comments
@@ -153,13 +141,13 @@ file-tracking table and no required geometry, foreign table or PostGIS conversio
 Register independently versioned files as separate logical dataset/layer identities.
 
 ```sql
-SELECT utt_pkg.mirror_register_external_file(
+SELECT mirror.register_external_file(
   'climate', 'temperature', '/source-files/climate/temperature-v1.nc', 'NetCDF');
-SELECT utt_pkg.mirror_store_layer('climate', 'temperature');
+SELECT mirror.store_layer('climate', 'temperature');
 -- Stage a replacement without changing the accepted registry row:
-SELECT utt_pkg.mirror_store_layer('climate', 'temperature', review => true,
+SELECT mirror.store_layer('climate', 'temperature', review => true,
   file_path => '/source-files/climate/temperature-v2.nc');
-SELECT utt_pkg.mirror_accept_layer('climate', 'temperature');
+SELECT mirror.accept_layer('climate', 'temperature');
 SELECT row_id, source_url, file_format, file_size, file_checksum, utt_txn
 FROM mirror.registry
 WHERE source_name = 'climate' AND layer_name = 'temperature'
@@ -171,7 +159,7 @@ checks its size and checksum before publishing. A changed path, format or conten
 creates another immutable registry version; a no-op only records an import.
 `path_namespace` identifies the database container's `/source-files` mount.
 The bounded-memory `sha256-chain-1m-v1` checksum hashes fixed 1 MiB blocks in sequence;
-its precise algorithm is documented on `mirror_file_evidence()`. It is not a normal
+its precise algorithm is documented on `file_evidence()`. It is not a normal
 whole-file SHA256 checksum. Native temporal coordinates stay in the original file;
 `utt_txn` records UTT's acceptance history only.
 
@@ -185,8 +173,8 @@ should administer files and symlinks below the source mount.
 
 ```sql
 -- Top-level CALL with autocommit; not inside BEGIN/COMMIT.
-CALL utt_pkg.mirror_update_registered_sources();
-CALL utt_pkg.mirror_update_registered_sources(review => true, skip_interval => NULL);
+CALL mirror.update_registered_sources();
+CALL mirror.update_registered_sources(review => true, skip_interval => NULL);
 ```
 
 Batch refresh commits each active dataset separately, skips pending imports and
@@ -202,110 +190,56 @@ Curation reads exact accepted source versions and import identities. It does not
 use advertised revisions to infer valid time. Ordinary mapped source dates can
 change independently of advertised dataset metadata.
 
-[example/berlin.sql](../example/berlin.sql) registers the public Berlin WFS sources,
-configures six stable keys, accepts their data and runs all six domain routines and
-three relation types. Curation resolves current mirror views through the registry,
-so retained source history is never mistaken for duplicate current source records.
+[example/berlin.sql](../example/berlin.sql) registers sources and accepts the six
+Berlin layers, committing each mirror step independently. It then explicitly pins
+one timestamp after those acceptances and builds the complete curated dataset in
+one transaction. Run without an outer transaction; roll back a failed step and
+retry it, preserving earlier mirror commits.
 
-## Domain mappings and curation
+## Snapshot curation
 
-Define mappings after accepting source history. The Berlin example installs one
-initial mapping per entity using the versioned `berlin_<entity>_v1` rules. These
-retain the existing ID conversions, boolean conversion, representative block point
-and source geometry. Block/plot `source_date` and address `address_date` retain
-source dates as ordinary state. The building rule includes `source_fid` as state;
-changes to any mapped attribute create a version. Extra enrichment attributes stay
-NULL until explicitly mapped.
-
-For another source exposing an official city ID, a geometry and a name, a direct
-mapping can be configured with ordinary SQL:
+The one functional Berlin recipe preserves the established ID conversions, nullable
+descriptive values, boolean conversion and representative block point. Block `datum`
+and plot `beg` become `source_date`; address `aufn_dt` becomes `address_date`.
+These are ordinary attributes. Unavailable enrichment attributes remain typed NULL.
 
 ```sql
-INSERT INTO utt.curation_mapping (
-  registry_row_id, target_entity, target_columns, source_columns,
-  source_id_column, rule_name, priority
-)
-SELECT row_id, 'city', ARRAY['geom','name'], ARRAY['geom','namlan'],
-       'lan', 'direct_city_v1', 100
-FROM mirror.registry
-WHERE source_name = 'berlin_alkis' AND layer_name = 'alkis:land';
-SELECT utt_pkg.curate_city();
+BEGIN;
+CALL curation.curate_berlin_20261101(
+  snapshot_at => TIMESTAMPTZ '2026-11-02 12:00:00+00',
+  region => NULL,
+  git_revision => NULL);
+COMMIT;
+SELECT * FROM curation.dataset_build;
+SELECT * FROM curation.berlin_building;
+SELECT * FROM curation.berlin_relation_building_plot;
 ```
 
-Direct rules pair source/target columns by position; group sets are normalized while
-preserving pairing. Matching IDs must have the same documented domain meaning;
-column casts do not establish that equivalence. Each active group must be disjoint
-from, or exactly match, other groups for that entity. Never map generated identity
-or system-time columns. Lower priorities win, followed by mapping ID and source key.
-Different groups may have different sources. Direct rules require all group members
-to be non-NULL; the concrete Berlin rules allow nullable descriptive attributes.
-`sum_<entity>_v1` rules aggregate numeric group members by `source_id_column` and
-record every contributing source row. Verify units and matching assumptions before
-activating a mapping; metadata cannot supply executable transformation SQL.
+Choose an actual compatible snapshot after the required source acceptances.
+The fixed default is `2026-11-01 00:00:00+00`; it never advances to latest data.
+New imports require an explicit override. A NULL region selects the whole registered
+scope; a supplied geometry must use the source CRS, without automatic conversion.
+Intersecting geometries are retained whole, including those crossing the boundary.
+Missing required accepted inputs or recipe columns fail the build clearly.
 
-Only `active` may be updated. Change a source, priority, rule or column group by
-inserting a new revision; deactivate the former revision in the same transaction.
-Change group boundaries by deactivating former mappings and installing replacements
-in one transaction, then re-curate. Eligible replacements must cover all columns in
-every affected former group. Incomplete replacement is rejected.
-Referenced definitions and provenance remain available after deactivation.
+The public procedure calls six entity procedures to prepare indexed temporary tables,
+then a relationship procedure over those curated tables. These internal steps run
+with the same snapshot/region and have no pipeline execution grants. The complete
+replacement and `dataset_build` row commit together; failed preparation or installation
+preserves the previous dataset. Concurrent builds serialize through an advisory lock;
+an exclusive registry lock prevents source publication during input selection.
 
-Run entity routines explicitly, then calculate the three relation types:
+Relationship tables preserve all n:m matches. Intersection area is divided by the
+first endpoint's area (building for building/block and building/plot, plot for
+plot/block), rounded to three decimals and retained only above 0.02. Spatial indexes
+narrow candidates before intersection calculation. There are no historical endpoint
+combinations or independently versioned relationships.
 
-```sql
-SELECT utt_pkg.curate_city();
-SELECT utt_pkg.curate_district();
-SELECT utt_pkg.curate_block();
-SELECT utt_pkg.curate_plot();
-SELECT utt_pkg.curate_building();
-SELECT utt_pkg.curate_address();
-SELECT utt_pkg.curate_relation('building_block');
-SELECT utt_pkg.curate_relation('building_plot');
-SELECT utt_pkg.curate_relation('plot_block');
-```
-
-Relation calls return the number of inserted pairs and leave existing pairs
-untouched, including on historical backfill. Their fraction is intersection area
-divided by the first entity's area (building for the first two relations, plot for
-the third), rounded to three decimals and retained only above 0.02.
-
-Each entity call returns its inserted-version count. Unchanged output returns 0,
-including when changed selected origins require new provenance observations. If
-all candidates are ineligible, existing content and origins remain in place.
-Source withdrawal and retirement do not automatically retire domain entities.
-Curation serializes mapping/domain changes and temporarily blocks mirror publication
-with a coarse table lock; keep manual transactions around curation short.
-
-### Inspecting selected origins
-
-```sql
-SELECT * FROM utt.building_current;
-SELECT * FROM utt_pkg.building_at(TIMESTAMPTZ '2026-10-28 12:00:00+00');
-SELECT p.*, m.target_columns, m.rule_name
-FROM utt_pkg.provenance_at('building', clock_timestamp()) p
-JOIN utt.curation_mapping m USING (mapping_id);
-SELECT * FROM utt.relation_bldg_plot_current;
-SELECT * FROM utt_pkg.relation_at(
-  'building_plot', TIMESTAMPTZ '2026-10-28 12:00:00+00');
-```
-
-Provenance identifies its output with `target_table regclass` (for example
-`'utt.building'::regclass`) and `target_row_id`, without entity-specific columns.
-The target reference is validated by a trigger rather than a target foreign key.
-To inspect all recorded observations for one version:
-
-```sql
-SELECT * FROM utt.curation_provenance
-WHERE target_table = 'utt.building'::regclass AND target_row_id = 1;
-```
-
-Use the as-of function for the selected contributor set at a particular time; the
-physical provenance table includes superseded observations. Contributors can be
-multiple rows per group, so joining them directly to entities can multiply counts
-or areas. The [metadata model](metadata-modelling.md#curation-and-selected-origins)
-explains replacement observations, carried origins and reference integrity.
-Native payload curation needs an approved reader; direct mappings can use registered
-file metadata without parsing the payload.
+`dataset_build` is system-maintained and has one current successful row per dataset:
+recipe, caller-supplied Git revision (NULL if unknown), actual mirror snapshot, region
+and completion time. It is not an execution log or per-record lineage catalogue.
+Keep SQL revisions and compatible source history to reconstruct results. A failed
+call reports its SQL error and leaves the prior successful build identity intact.
 
 ## Persistence
 
@@ -324,12 +258,16 @@ Run them against a disposable freshly initialized database with
 [tests/mirror-files.sql](../tests/mirror-files.sql) describe their small ignored
 fixtures. They require the same `/source-files` mount as the database.
 
-Domain checks are [tests/curation.sql](../tests/curation.sql) (selection/provenance),
-[tests/curation-berlin.sql](../tests/curation-berlin.sql) (six concrete rules and
-historical relations), and [tests/curation-files.sql](../tests/curation-files.sql)
-(native-file metadata origins). Run them with `psql -X -v ON_ERROR_STOP=1 -f ...`
-against a disposable initialized database. The file checks use the same generated
-fixtures as the mirror file checks. All SQL checks roll back their test data.
+Snapshot checks are [tests/curation-berlin.sql](../tests/curation-berlin.sql): six
+transformations, reproducible rebuilds, timestamp overrides, historical schemas,
+n:m relations, privilege boundaries and failed installation rollback.
+[source-columns.sql](../tests/source-columns.sql) independently checks schema reuse.
+[spatial-relations.sql](../tests/spatial-relations.sql) checks fractions, empty and
+zero-area geometries, pair uniqueness, reruns and a 3,000-row spatial-index plan.
+All checks run against a disposable database and roll back their data. Remove the
+generated native-file fixtures after testing.
 
-[source-columns.sql](../tests/source-columns.sql) checks distinct structure reuse,
-returning to an older structure, curation provenance and renamed reader permissions.
+For a core-only initialization check, load files `901`–`903` and run
+[core-independence.sql](../tests/core-independence.sql) before loading `913-curation.sql`.
+The core check requires the upstream `citydb` namespace and installed extensions,
+but no project curation objects.

@@ -32,40 +32,28 @@ REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 
 GRANT USAGE ON SCHEMA citydb TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT USAGE ON SCHEMA mirror TO uttdb_reader, uttdb_developer, uttdb_pipeline;
-GRANT USAGE ON SCHEMA utt TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT USAGE ON SCHEMA utt_pkg TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 
 GRANT SELECT ON ALL TABLES IN SCHEMA citydb TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT SELECT ON ALL TABLES IN SCHEMA mirror TO uttdb_reader, uttdb_developer, uttdb_pipeline;
-GRANT SELECT ON ALL TABLES IN SCHEMA utt TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
+GRANT SELECT ON ALL TABLES IN SCHEMA utt_pkg TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA citydb TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA mirror TO uttdb_reader, uttdb_developer, uttdb_pipeline;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA utt TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA utt_pkg TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 
-GRANT ALL PRIVILEGES ON SCHEMA citydb, mirror, utt, utt_pkg TO uttdb_dba;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA citydb, mirror, utt TO uttdb_dba;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA citydb, mirror, utt TO uttdb_dba;
+GRANT ALL PRIVILEGES ON SCHEMA citydb, mirror, utt_pkg TO uttdb_dba;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA citydb, mirror, utt_pkg TO uttdb_dba;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA citydb, mirror, utt_pkg TO uttdb_dba;
 GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA utt_pkg TO uttdb_dba;
-
-GRANT CREATE ON SCHEMA mirror, utt, utt_pkg TO uttdb_pipeline;
-GRANT INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON ALL TABLES IN SCHEMA mirror, utt TO uttdb_pipeline;
-GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA mirror, utt TO uttdb_pipeline;
-GRANT EXECUTE ON ALL ROUTINES IN SCHEMA utt_pkg TO uttdb_pipeline, uttdb_app_writer;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA citydb GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 ALTER DEFAULT PRIVILEGES IN SCHEMA mirror GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline;
-ALTER DEFAULT PRIVILEGES IN SCHEMA utt GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-ALTER DEFAULT PRIVILEGES IN SCHEMA mirror, utt GRANT INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLES TO uttdb_pipeline;
-ALTER DEFAULT PRIVILEGES IN SCHEMA citydb, mirror, utt GRANT USAGE, SELECT ON SEQUENCES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-ALTER DEFAULT PRIVILEGES IN SCHEMA mirror, utt GRANT UPDATE ON SEQUENCES TO uttdb_pipeline;
-ALTER DEFAULT PRIVILEGES IN SCHEMA utt_pkg GRANT EXECUTE ON ROUTINES TO uttdb_pipeline, uttdb_app_writer;
+ALTER DEFAULT PRIVILEGES IN SCHEMA utt_pkg GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
+ALTER DEFAULT PRIVILEGES IN SCHEMA citydb, mirror, utt_pkg GRANT USAGE, SELECT ON SEQUENCES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 
 ALTER DEFAULT PRIVILEGES FOR ROLE uttdb_pipeline IN SCHEMA mirror GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline;
-ALTER DEFAULT PRIVILEGES FOR ROLE uttdb_pipeline IN SCHEMA utt GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-ALTER DEFAULT PRIVILEGES FOR ROLE uttdb_pipeline IN SCHEMA mirror, utt GRANT INSERT, UPDATE, DELETE, TRUNCATE, REFERENCES, TRIGGER ON TABLES TO uttdb_pipeline;
-ALTER DEFAULT PRIVILEGES FOR ROLE uttdb_pipeline IN SCHEMA mirror, utt GRANT USAGE, SELECT ON SEQUENCES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-ALTER DEFAULT PRIVILEGES FOR ROLE uttdb_pipeline IN SCHEMA mirror, utt GRANT UPDATE ON SEQUENCES TO uttdb_pipeline;
-ALTER DEFAULT PRIVILEGES FOR ROLE uttdb_pipeline IN SCHEMA utt_pkg GRANT EXECUTE ON ROUTINES TO uttdb_pipeline, uttdb_app_writer;
+ALTER DEFAULT PRIVILEGES FOR ROLE uttdb_pipeline IN SCHEMA utt_pkg GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
+ALTER DEFAULT PRIVILEGES FOR ROLE uttdb_pipeline IN SCHEMA mirror, utt_pkg GRANT USAGE, SELECT ON SEQUENCES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 
 CREATE OR REPLACE FUNCTION utt_pkg.create_developer_sandbox(developer_role name)
 RETURNS name
@@ -111,6 +99,8 @@ COMMENT ON FUNCTION utt_pkg.create_developer_sandbox(name) IS
 COMMENT ON ROLE uttdb_dba IS 'UTTDB administrators. Can provision logins, sandbox schemas, and database-owned objects.';
 COMMENT ON ROLE uttdb_reader IS 'UTTDB read-only access for trusted humans and diagnostics.';
 COMMENT ON ROLE uttdb_developer IS 'UTTDB developer access. Reads curated schemas and works inside assigned sandbox schemas.';
-COMMENT ON ROLE uttdb_pipeline IS 'UTTDB data pipeline role for controlled mirror/utt writes and package execution.';
+COMMENT ON ROLE uttdb_pipeline IS 'UTTDB data pipeline role for controlled snapshot builds; mirror administration remains DBA-only.';
 COMMENT ON ROLE uttdb_app_reader IS 'UTTDB application read role for APIs and services.';
 COMMENT ON ROLE uttdb_app_writer IS 'UTTDB application mutation role. Prefer package/API functions over direct table writes.';
+
+ALTER DEFAULT PRIVILEGES IN SCHEMA utt_pkg REVOKE EXECUTE ON ROUTINES FROM PUBLIC;

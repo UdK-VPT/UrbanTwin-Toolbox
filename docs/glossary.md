@@ -41,23 +41,17 @@ Key terms used in the [metadata model](metadata-modelling.md).
 | No-op / idempotency | Reprocessing unchanged state creates no additional data versions; a successful import can still be recorded. |
 | Checksum / content hash | A fingerprint of file bytes or row state used as change evidence; it cannot restore the original data. |
 
-## Curation and provenance
+## Snapshot curation
 
 | Term | Meaning |
 |---|---|
-| Domain curation | Optional selection and transformation of accepted sources into application-specific entity tables. |
-| Mapping revision | An immutable candidate-contribution definition (`mapping_id`); only activation can change. |
-| Atomic attribute group | Target attributes selected together; active groups are equal or disjoint. |
-| Candidate / eligibility | A possible contribution and whether it meets the approved rule's matching, type and completeness requirements. |
-| Priority / fallback | Preference among eligible candidates, with lower numbers winning; fallback selects another eligible candidate. Without replacements, existing state and origins remain. |
-| Approved rule | Identified SQL behavior for matching, transformation, eligibility or aggregation; behavior changes receive a new identity. |
-| Aggregation | Producing a group from multiple source records while retaining every selected contributor. |
-| Carried group | Existing state retained on a new entity version because another group changed, with its original origins. |
-| Provenance | Evidence of exact selected source versions and mappings supplying a target version's groups. |
-| Contributor | One selected source record/version, mapping and accepted input used for a group. |
-| Provenance observation | A timestamped complete contributor set for one target-version/group; its time is not another temporal axis. |
-| Selection-only change | Different selected origins producing identical target values; adds provenance without a new entity version. |
-| Replacement observation | A complete new selection superseding earlier contributors while preserving their history. |
-| As-of query | Reads state or selected origins known at a requested system time, using historical mappings. |
-| Current view | A read-only, non-materialized query selecting current versions without copying the dataset. |
-| Spatial relation | A connection between immutable endpoint versions, with temporal context derived from their overlapping system-time ranges. |
+| Curation recipe | Versioned SQL procedure defining how to build a typed snapshot dataset from mirror or compatible curated inputs. |
+| Mirror snapshot | One requested system-time timestamp selecting accepted source versions. |
+| Curated dataset | Cooperating ordinary tables built for one snapshot/region; no record-version history. |
+| Build identity | `curation.dataset_build`: current recipe, actual mirror snapshot, region, optional Git revision and completion time. |
+| Snapshot default | Fixed recipe timestamp; callers can override it explicitly without changing the default. |
+| Working table | Temporary indexed table used by a stepwise recipe before atomic output replacement. |
+| Spatial relation | One matched endpoint pair in an n:m table, with attributes such as overlap fraction; no independent temporal history. |
+| Derived source | Ordinary source produced by simulation or analysis, potentially using UTT data; explicitly registered through the usual mirror workflow. |
+| As-of query | Selects mirror versions whose system-time ranges contain the requested timestamp. Curated historical datasets are rebuilt. |
+| Current view | Read-only ordinary mirror view selecting current source versions without copying data. |

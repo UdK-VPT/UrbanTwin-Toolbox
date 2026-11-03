@@ -14,9 +14,7 @@ CREATE EXTENSION IF NOT EXISTS btree_gist WITH SCHEMA public;
 
 -- Create project schemas
 CREATE SCHEMA IF NOT EXISTS mirror;
-CREATE SCHEMA IF NOT EXISTS utt;
 CREATE SCHEMA IF NOT EXISTS utt_pkg;
 
-COMMENT ON SCHEMA mirror IS 'Self-owned mirror of upstream GIS source data.';
-COMMENT ON SCHEMA utt IS 'Curated UrbanTwin-Toolbox project truth derived from mirrored and integrated sources.';
-COMMENT ON SCHEMA utt_pkg IS 'UrbanTwin-Toolbox database functions and procedures that coordinate citydb, mirror, and utt schemas.';
+COMMENT ON SCHEMA mirror IS 'Source registry, ingestion routines, acceptance and accepted history.';
+COMMENT ON SCHEMA utt_pkg IS 'Shared UrbanTwin-Toolbox administration helpers; independent of mirror and project curation.';

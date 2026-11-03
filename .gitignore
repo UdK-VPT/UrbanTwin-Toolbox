@@ -10,6 +10,9 @@
 data/
 /uttdb/source-files/
 
+# Tests
+tests/
+
 # Windows OS and macOS files.
 Thumbs.db
 Desktop.ini

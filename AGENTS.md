@@ -15,8 +15,12 @@ Keep final answers concise: normally 5–15 sentences or at most five short bull
 
 ## Direction and design priorities
 
+The mirror/snapshot-curation revision is specified in `DESIGN-NOTES.md`, section 7.
+This file is authoritative for implementation and review. Mirror owns source history;
+curation owns replaceable snapshot tables and current build identity.
+
 UrbanTwin-Toolbox is a 3DCityDB v5-based urban digital twin centered on
-PostgreSQL/PostGIS. The `mirror` and `utt` workflows should remain primarily inside
+PostgreSQL/PostGIS. The mirror and curation workflows should remain primarily inside
 PostgreSQL so the team can understand, discuss and maintain them together.
 
 - Prefer the smallest readable set of functions, tables and columns that preserves
@@ -25,6 +29,42 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   views, routines, constraints and other database objects, including generated ones.
   Do not put hashes, opaque codes or generated numeric identifiers in object names.
   Resolve naming collisions with meaningful names or an explicit readable name.
+- For the project-schema architecture, develop and test only the default
+  `curation` schema. Users may organize independent projects in meaningfully named
+  schemas such as `curation_berlin` or `curation_stuttgart`, sharing core infrastructure
+  and mirror sources. Do not implement extra project schemas, multi-project management
+  or a named-schema initializer until requested.
+- For rebuildable curation, give each
+  functional recipe version a fixed default mirror snapshot `timestamptz`, with an
+  explicit caller override for testing or later compatible data. Do not silently use
+  now/latest or advance the default. Record the actual snapshot used with recipe/Git
+  revision, region/parameters and build outcome; distinguish snapshot time from build
+  time. Curated outputs are replaceable, without independent record history; optimize
+  full snapshot/region reconstruction before adding incremental processing or caches.
+  Implement curation routines as database SQL procedures (`CREATE PROCEDURE`, called
+  with `CALL`). Each builds a snapshot dataset into an ordinary SQL table from mirror
+  data selected at the requested timestamp, or from already curated tables representing
+  the intended snapshot. Curated tables have no temporal modelling or system-time
+  version ranges; the input snapshot identifies the build, not a row-history axis.
+  Use readable SQL steps for preparation, matching/selection, validation and indexing.
+  Tables cooperating as a system must share a meaningful prefix or suffix.
+  Build replacements separately and install them atomically, without partial results.
+  Publication interfaces and schema placement are undecided: they may later have a
+  separate schema or live in curation. Do not require a publication schema or views.
+  Implement only one functional curation version for the current demonstration; do
+  not add version-management infrastructure. Keep established output columns and
+  meanings, using typed NULLs for unavailable values without magic sentinels. Defer
+  reason/error codes, per-attribute status columns and diagnostic structures. Invalid
+  builds must fail while leaving the previous completed curated result intact.
+- For snapshot curation, retain separate
+  building–plot, building–block and plot–block relationship tables to represent n:m
+  matches. Store one row per pair, enforce endpoint foreign keys and pair uniqueness,
+  and keep overlap fractions on the relationship. Do not collapse these relationships
+  into single endpoint references or arrays because most matches happen to be 1:1.
+  Build them after their endpoint tables for the same snapshot dataset, with a shared
+  meaningful prefix or suffix and no temporal history. Do not compute all historical
+  endpoint combinations. Start with full reconstruction and measure representative
+  spatial query plans before adding incremental processing or caches.
 - For each new feature, suggest and introduce the minimum number of tables and
   columns. Extend existing structures and tables wherever possible instead of
   building parallel structures. Keep changes to existing structures minimal and
@@ -42,7 +82,7 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   workers. Add an external component only for a demonstrated database/extension gap,
   and keep it small and explainable.
 - Use a unitemporal model: system time (`utt_txn tstzrange`) is the only general
-  temporal axis for mirror and curated history. Keep original source dates as
+  temporal axis for mirror history. Keep original source dates as
   ordinary attributes; do not infer valid-time ranges or add a second time axis.
   Avoid redundant timestamps.
 - Existing interfaces describe the current implementation. Check their callers before
@@ -98,11 +138,12 @@ PostgreSQL so the team can understand, discuss and maintain them together.
 
 - Keep UTT-owned implementation objects out of `public`; use the project schemas
   according to their responsibilities.
-- Put UTTDB cross-schema routines in `utt_pkg`. Prefix mirror routines `mirror_`.
-  Reserve `curate_` for routines that perform curation; read-only historical readers
-  use `<entity>_at(timestamp)`, `provenance_at(entity, timestamp)` and
-  `relation_at(type, timestamp)` without that prefix. Internal curation helpers and
-  trigger functions use `curation_` so they are distinct from workflow entry points.
+- Put all mirror data, routines and triggers in `mirror`; routine names omit the
+  redundant `mirror_` prefix. Keep shared administration helpers in `utt_pkg`.
+  Put project recipes and their helpers in `curation`. Reserve `curate_` for SQL
+  procedures that build curated tables; internal non-curating helpers use `curation_`.
+  Use explicit functional dates on recipe procedure names; these meaningful version
+  dates are permitted, unlike generated numeric identifiers in object names.
 - Add a PostgreSQL `COMMENT` to every UTT-owned function or procedure. State its
   purpose, caller, effects, result and a practical SQL example. A trigger-function
   example must show the operation that fires it.
@@ -113,7 +154,7 @@ PostgreSQL so the team can understand, discuss and maintain them together.
 - Preserve published source metadata in its original language and wording. Leave
   absent values `NULL`; do not infer license rights. Registry `fees` and
   `access_constraints` retain service-level statements verbatim.
-- Curated writes require explicit curation/diff workflows. Preserve narrow write
+- Curated writes require explicit snapshot-build procedures. Preserve narrow write
   privileges until a replacement boundary is designed.
 - Keep changes small and independently usable. Document practical calls in
   [docs/uttdb.md](docs/uttdb.md) and routine comments.
@@ -123,19 +164,36 @@ PostgreSQL so the team can understand, discuss and maintain them together.
 
 ## Source capture and acceptance rules
 
+- Prioritize an independently working and tested mirror/history workflow in the
+  architecture. Reimplement curation only as a demonstration
+  of the agreed snapshot-based, versioned recipe principle. Defer derived-source
+  workflows, metadata handling, execution tracking and input lineage until mirror is
+  validated and that later work is explicitly requested; do not add anticipatory
+  infrastructure for it.
+- A derived source is an ordinary source whose producer is a simulation, analysis
+  or other processing tool, potentially fed by UTT data. Reuse supported foreign-table,
+  file or other adapters and the normal registration/acceptance/history workflow.
+  The term alone requires no new flag, storage mode, registry, table, adapter or
+  execution subsystem; derived-source metadata and lineage design are deferred. Registration
+  of outputs is explicit, not automatic for every disposable curation build.
+- Keep mirror metadata and data in `mirror`, including registry, import and
+  source_columns, and all mirror routines. Shared administration helpers live in
+  `utt_pkg`; project procedures and generated snapshot tables live in `curation`.
+  Core files 901–903 initialize and operate without optional `913-curation.sql`.
 - Keep mirror usable independently of domain curation: registration, ingestion,
   acceptance, history, refresh and retirement must not require curation objects or
   routines. Curation depends on an initialized mirror with accepted inputs for its
-  mappings; registration alone does not supply data. Keep this dependency one-way,
+  recipes; registration alone does not supply data. Keep this dependency one-way,
   while coordinating publication and curation through the documented locking boundary.
 - Capture heterogeneous source data before optional domain curation. Preserve original
   attributes and geometry; harmonize only for a concrete domain and application.
   Treat CityGML/3DCityDB as an interoperability interface, not a mandatory copy of
   every research attribute. Do not add speculative domains or execution platforms.
-- Keep source/import metadata in `mirror` and mapping/provenance metadata in `utt`.
-  Reuse the five shared metadata tables: registry, import, source_columns,
-  curation_mapping and curation_provenance. Do not add parallel file registries,
-  review tables, permanent change sets, transformation catalogues or execution logs.
+- Keep source/import metadata in `mirror` and current build identity in
+  `curation.dataset_build`. The metadata inventory is four tables: registry, import,
+  source_columns and dataset_build. Do not restore generic mapping/provenance tables,
+  source provenance partitions, permanent change sets or execution logs for this
+  demonstration. New transformations belong in reviewed recipe SQL, not metadata.
 - Register dataset/layer identity as `(source_name, layer_name)`, not just an endpoint
   or path. Use immutable registry `row_id` references. Never delete or repurpose a
   referenced registration; retire it. Keep referenced imports and schemas available.
@@ -144,8 +202,7 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   snapshot, one `_stored` history table and an ordinary read-only current view.
   Registry-controlled base names must be unique across registrations and readable.
   Normalize source/layer words without hashes or truncation, reject bases over
-  48 bytes and reject collisions explicitly. Keep native provenance partition names
-  stable across registry versions of the same logical file dataset.
+  48 bytes and reject collisions explicitly.
   Current views must not duplicate storage or expose write access through base tables.
 - Preserve source columns, types and values in staging; do not filter, curate or add
   technical version columns there. Keep revision evidence separately. Document
@@ -225,7 +282,7 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   Do not invent relational column schemas for opaque native files; retain format and
   available published structure metadata instead.
 - Permit an initial unaccepted registration without an open history range. Refresh
-  resolves current logical identity; imports/mappings reference exact registry rows.
+  resolves current logical identity; imports reference exact registry rows.
   Stage file evidence through the same import lifecycle without overwriting accepted
   metadata. Identify the path's server/mount namespace; use `/source-files` in containers.
 - Keep staged files unchanged and revalidate readability/checksums before acceptance;
@@ -244,91 +301,61 @@ PostgreSQL so the team can understand, discuss and maintain them together.
 - Curation of native contents requires an approved format-specific reader and exact
   accepted-file provenance. Keep filesystem helpers small; acceptance/history stay SQL.
 
-## Temporal curation rules
+## Snapshot curation rules
 
-Apply the rules below when changing history, mappings, provenance or relations.
-The [metadata guide](docs/metadata-modelling.md) explains their behavior to users.
-
-- Each version has immutable `row_id`, repeatable logical identity and mandatory
-  `utt_txn tstzrange`. Use nonempty half-open ranges with finite openings and
-  non-overlapping system time per logical identity enforced with GiST exclusion
-  constraints. Current versions have unbounded endings. There is no generic source_valid.
-- Keep original source dates as ordinary attributes; do not infer valid-time ranges
-  or reject changed state because a source date moved backwards.
-- Compare every managed attribute, including geometry and mapped dates. A changed
-  state closes the former system-time version and inserts its replacement at one
-  timestamp. Historical attributes are never overwritten.
-- Active mapping groups must be equal or disjoint. Definitions are immutable except
-  for activation. Approved SQL rule identities version behavior; never store SQL
-  transformations or a JSON rule language in metadata. Lower numeric priorities win,
-  followed by mapping ID and stable source key. Normalize group sets and reject empty
-  or duplicate members. Changed columns, priority, source or behavior need new revisions.
-- Validate mapped columns/types against catalogs and compatible units, code meanings,
-  CRS and matching IDs; do not infer automatic CRS conversion. Exclude generated
-  version metadata from managed state. Missing columns in the latest accepted schema
-  make mappings ineligible, even if historical physical columns remain.
-- Preserve the six Berlin rule contracts: usable geometry with nullable descriptive
-  values, including block datum/plot beg as source_date and address aufn_dt as
-  address_date. Direct rules cast named column pairs and require all group members;
-  sum rules aggregate by explicit matching ID only from complete contributors.
-  Additional transformations require new approved SQL rule identities.
-  Preserve positional source/target column pairing when normalizing group sets;
-  casts alone do not establish equivalent identifier meanings.
-- Provenance records exact selected contributors, not every rejected candidate.
-  Changed output records every group on a new target version, including carried
-  groups. Changed origins alone append complete observations without versioning
-  output. Unchanged source versions and selection create no new observations.
-  Losing candidates and advertised revision changes alone must not version output.
-  Keep the original accepted import for carried origins, including noncurrent inputs.
-- Record one provenance contribution per source record/group, not per attribute, with
-  exact mapping, named stable key (small JSONB composite keys are allowed), source
-  version, accepted import, observation time and factual selection reason. Do not copy
-  input values or rejected candidates. Write complete contributor sets atomically
-  with strictly increasing observation times per target/group and prevent duplicates.
-- Keep generic target_table/target_row_id references; do not add per-entity provenance
-  columns. Validate mapping/table agreement, lock/check the target row and require
-  observation time within its range. Protect target history from deletion/truncation.
-  Use per-source provenance partitions for genuine source-history foreign keys and
-  registry-version FKs for file origins; do not duplicate source data in partitions.
-- Without eligible replacements, retain state and its exact former origins.
-  Withdrawals/retirement require explicit domain semantics; missing sources are not
-  automatic domain deletions. Group-boundary replacements must cover former groups
-  completely, preserving historical definitions. Deactivate old and install replacement
-  groups in one transaction, then re-curate; reject partial regrouping. New observations
-  supersede overlapping groups without reinterpreting earlier ones. Splits, merges
-  and cross-source identity changes also require explicit domain decisions.
-- Spatial relations connect immutable endpoint versions whose system-time ranges
-  overlap. Backfill missed historical pairs and insert only absent pairs; derive time
-  from endpoints without another axis. Use endpoint `row_id` foreign keys, not
-  repeatable logical IDs; logical relationship attributes may remain NULL or
-  unconstrained where no unique version target exists. Keep technical source keys
-  distinct from official relationship identifiers. Divide intersection area by the
-  first endpoint's area (building for building/block and building/plot; plot for
-  plot/block). Round intersection fractions to three decimals
-  and retain only values above 0.02. Run relation curation explicitly after endpoint
-  curation; entity writes do not update relations automatically.
-- Provide read-only current views and as-of queries without additional history tables.
-  As-of provenance selects the target version and latest complete group observations
-  using historical mapping definitions, never today's activation. Keep multiple
-  contributors separate from flat entity rows to avoid multiplying counts/areas.
-  Use current-row partial, stable-key, spatial and appropriate historical indexes;
-  check plans on representative data.
-- Pipeline writes go through security-definer curation boundaries. Mapping edits,
-  curation and relation writes share advisory transaction lock (70303,1). Curation
-  also locks mirror.registry EXCLUSIVE while reading accepted inputs; this coarse
-  publication boundary deliberately favors correctness over concurrent ingestion.
+- Implement one functional Berlin recipe with six entity tables and three n:m tables,
+  all using the meaningful `berlin_` prefix. Relationship tables additionally use
+  `relation_`, for example `curation.berlin_relation_building_plot`. Preserve domain attributes and official
+  ID conversions; snapshot-local `row_id` values may change on reconstruction.
+- Read mirror versions at one requested timestamp and validate required columns
+  against the accepted schema at that timestamp, not retained physical columns or
+  today's view. Require accepted inputs; do not silently use latest or skip missing
+  recipe columns. Preserve source dates and nullable descriptive values. Do not infer
+  matching identifiers, unit conversion or CRS conversion.
+- Recipes have fixed default `timestamptz` snapshots and explicit overrides. Use a
+  new functional recipe version for intended feature/semantic changes; fixes,
+  maintenance and performance improvements may update an existing version. Preserve
+  older functional recipes when introducing later versions; Git records exact SQL.
+- Build indexed temporary entity tables, then relationship tables from those same
+  inputs. Restrict internal-step execution to DBA/owner and expose only the complete
+  security-definer build procedure to pipelines. Keep output tables read-only for
+  readers, apps and pipelines; app writers receive no build grant.
+- Serialize builds with advisory transaction lock (70303,1). Hold mirror.registry
+  EXCLUSIVE throughout input selection: this blocks acceptance's initial row locks
+  and schema changes while allowing plain reads, avoiding publication lock inversions.
+  Core mirror must never acquire a dependency on project objects or project locks.
+- Install the complete cooperating dataset and its build identity in one transaction.
+  Preserve output object identities and dependent queries; failures at any stage
+  leave the prior complete dataset and metadata intact. No internal commits. There
+  is no temporal modelling, historical pair backfill or per-record provenance in
+  curated outputs. Reconstruct earlier datasets from retained mirror history.
+- Preserve separate building/block, building/plot and plot/block tables, one row
+  per pair with endpoint foreign keys and pair uniqueness. Divide intersection area
+  by the first endpoint's area, round to three decimals and retain fractions above
+  0.02. Use spatial-index candidate probes, calculate each fraction once and refresh
+  planner statistics; inspect representative plans without global planner overrides.
+- Keep one current successful row per dataset in `curation.dataset_build`, recording
+  recipe, optional caller-supplied Git revision, actual mirror snapshot, region and
+  completion time. Use explicit columns for concrete parameters if added. Unknown
+  Git revisions remain NULL; failed attempts create no execution history. Build
+  identity is not the deferred derived-source lineage model.
+- A NULL region selects the whole registered scope; explicit regions require a
+  compatible source CRS. Retain whole intersecting geometries, including boundary
+  crossers, and expand candidate regions for any future distance-based predicates.
 
 ## Implementation locations and validation
 
 - `901-setup-structures.sql`: schemas and extensions; `902-create-privilege-roles.sql`:
   group roles and developer sandboxes; `903-mirror-setup.sql`: ingestion/history;
-  `912-utt-buildings.sql`: six entities, three relations and metadata tables;
-  `913-curation.sql`: mapping validation, rules, provenance, curation and readers.
+  `913-curation.sql`: all optional project tables, dataset_build, Berlin procedures,
+  schema checks and atomic installation. Keep structures and routines together;
+  do not restore a separate 912 curation setup file.
 - Use [example/berlin.sql](example/berlin.sql) for the public six-layer workflow.
   Run SQL suites in `tests/` only against a disposable initialized database; remove
-  generated fixtures afterward. Cover acceptance, file evidence, all six rules,
-  fallback/aggregation/carried groups, group replacement, history/provenance integrity,
-  source-date changes and historical relation backfill when changing those boundaries.
+  generated fixtures afterward. Cover acceptance, file evidence, schema reuse, all six Berlin transformations,
+  timestamp overrides, historical schema selection, n:m integrity, source dates,
+  reproducible reconstruction and failed installation rollback. Validate core mirror
+  without curation; measure representative entity/relationship plans separately.
 - Do not claim unseen source history, every rejected candidate, historical service
   metadata or byte-exact reproduction without retained files/snapshots. History starts
   with accepted observations; the database cannot recover unobserved remote changes.
