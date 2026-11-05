@@ -61,7 +61,9 @@ flowchart TD
 ```
 
 Ingestion compares explicitly configured stable keys and complete source state,
-including geometry. New objects are inserted; changed objects receive replacement
+including geometry. Comparison and history protection use native lossless row
+serialization, avoiding implicit GeoJSON casts: curved geometries, Z/M, SRIDs and
+raster pixels remain part of the state. New objects are inserted; changed objects receive replacement
 versions; unchanged objects stay untouched. Valid snapshots pass automatically when
 safety thresholds pass unless manual review was requested. Otherwise the snapshot
 remains available for inspection. Manual acceptance publishes that same snapshot
@@ -95,7 +97,7 @@ is current descriptive metadata, not an archive of every service response.
 
 External files such as NetCDF remain outside PostgreSQL. Their accepted versions
 live directly in `mirror.registry`, with path/namespace, format, size,
-checksum/algorithm, `utt_txn` and creating import. A path is a location, not dataset
+checksum/algorithm, `file_txn` and creating import. A path is a location, not dataset
 identity. Registration needs neither a parser nor geometry; curation of native
 contents requires an approved format-specific reader and exact-file provenance.
 
@@ -113,7 +115,8 @@ not the source file.
 
 ## One system-time axis
 
-`utt_txn tstzrange` records **when UTT considered a state current**, not when an
+`utt_txn tstzrange` in row-history tables and `file_txn tstzrange` in the native-file
+registry record **when UTT considered a state current**, not when an
 object changed in the real world. Every version has an immutable `row_id` and a
 repeatable logical identity. Nonempty half-open ranges `[start, end)` have finite
 openings and unbounded endings for current versions. GiST exclusion constraints

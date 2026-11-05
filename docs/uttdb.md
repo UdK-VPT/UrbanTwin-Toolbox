@@ -53,7 +53,8 @@ SELECT source_name, layer_name, table_base, stored_table, last_imported_at
 FROM mirror.registry WHERE storage_mode = 'rows';
 ```
 
-Declare non-NULL, unique stable source keys before row ingestion. Composite keys
+Declare non-NULL, unique stable source keys before row ingestion. Use nonspatial
+identifier columns; geometry, geography and raster keys are rejected before encoding. Composite keys
 are supported through ordered column-name arrays; do not use physical row positions.
 Keys are captured with each import and cannot change after acceptance; changing a
 pending key definition requires rejection and re-staging. GeoTIFF registration
@@ -148,10 +149,10 @@ SELECT mirror.store_layer('climate', 'temperature');
 SELECT mirror.store_layer('climate', 'temperature', review => true,
   file_path => '/source-files/climate/temperature-v2.nc');
 SELECT mirror.accept_layer('climate', 'temperature');
-SELECT row_id, source_url, file_format, file_size, file_checksum, utt_txn
+SELECT row_id, source_url, file_format, file_size, file_checksum, file_txn, retired
 FROM mirror.registry
 WHERE source_name = 'climate' AND layer_name = 'temperature'
-  AND utt_txn @> TIMESTAMPTZ '2026-10-28 12:00:00+00';
+  AND file_txn @> TIMESTAMPTZ '2026-10-28 12:00:00+00';
 ```
 
 The pending staging table is a one-file manifest. Acceptance re-reads the file and
@@ -161,7 +162,15 @@ creates another immutable registry version; a no-op only records an import.
 The bounded-memory `sha256-chain-1m-v1` checksum hashes fixed 1 MiB blocks in sequence;
 its precise algorithm is documented on `file_evidence()`. It is not a normal
 whole-file SHA256 checksum. Native temporal coordinates stay in the original file;
-`utt_txn` records UTT's acceptance history only.
+`file_txn` records UTT's acceptance history only.
+
+A retired native-file source can be registered again under the same source/layer
+identity. This creates a new registry row; earlier file references and imports remain
+unchanged. Active-file selection requires `NOT retired` as well as an open (or not
+yet accepted) `file_txn`. Retirement does not close the old range, so historical
+queries may return archived references alongside the later registration. Use `row_id`
+and `retired` to distinguish them. Repeating retirement without an active registration
+reports that none exists; pending imports must first be accepted or rejected.
 
 Keep accepted files unchanged at version-specific paths when historical byte
 retrieval matters. Registry history preserves paths and checksums, not file payloads;

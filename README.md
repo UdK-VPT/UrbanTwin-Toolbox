@@ -21,3 +21,6 @@ the SQL as a whole or step by step in pgAdmin.
 
 Start with the [documentation overview](docs/welcome.md) for database usage,
 temporal curation, pgAdmin and the current architecture.
+
+Deferred fixes, small features and behavior discussions are tracked in the
+[backlog](BACKLOG.md).

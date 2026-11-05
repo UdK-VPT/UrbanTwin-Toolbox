@@ -15,9 +15,9 @@ Keep final answers concise: normally 5–15 sentences or at most five short bull
 
 ## Direction and design priorities
 
-The mirror/snapshot-curation revision is specified in `DESIGN-NOTES.md`, section 7.
-This file is authoritative for implementation and review. Mirror owns source history;
-curation owns replaceable snapshot tables and current build identity.
+Mirror owns source history; curation owns replaceable snapshot tables and current
+build identity. The rules below define the implemented architecture and boundaries
+for subsequent changes.
 
 UrbanTwin-Toolbox is a 3DCityDB v5-based urban digital twin centered on
 PostgreSQL/PostGIS. The mirror and curation workflows should remain primarily inside
@@ -82,14 +82,18 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   workers. Add an external component only for a demonstrated database/extension gap,
   and keep it small and explainable.
 - Use a unitemporal model: system time (`utt_txn tstzrange`) is the only general
-  temporal axis for mirror history. Keep original source dates as
+  temporal axis for mirror history. Native-file reference history uses the same
+  system-time semantics under the file-specific name `mirror.registry.file_txn`;
+  row-history tables retain `utt_txn`. Keep original source dates as
   ordinary attributes; do not infer valid-time ranges or add a second time axis.
   Avoid redundant timestamps.
 - Existing interfaces describe the current implementation. Check their callers before
   replacement or removal. This is a changing prototype: existing database contents
   need not be preserved, and fresh initialization is the implementation target. Do
-  not write migration SQL or compatibility code for existing databases until the
-  user explicitly starts that phase. Prefer focused edits to existing files over
+  not normally write migration SQL or compatibility code during development.
+  Create a development migration only when explicitly requested by the user;
+  each request authorizes that specific change, not future migrations.
+  Prefer focused edits to existing files over
   wholesale rewrites so contributor history remains readable.
 
 ## Repository and runtime
@@ -119,6 +123,10 @@ PostgreSQL so the team can understand, discuss and maintain them together.
 - Use standard Markdown, relative links and Mermaid for architecture diagrams.
 - Document current implementation. Keep roadmaps and speculative functionality out
   of the implementation guides.
+- Keep deferred low-priority fixes, small features and behavior proposals in root
+  [BACKLOG.md](BACKLOG.md). Entries are not implementation authorization or overrides
+  of these rules. Keep entries concise; remove resolved items and update the relevant
+  current documentation and lasting rules when the work is completed.
 - Prefer readable structures and a few practical SQL examples. Keep detailed
   interfaces in SQL comments instead of duplicating them throughout the guides.
 - Describe temporal history using system time consistently. Distinguish ordinary
@@ -160,7 +168,7 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   [docs/uttdb.md](docs/uttdb.md) and routine comments.
 - Use rollback-only database checks where practical. Distinguish repository changes
   from changes applied to a running database. Do not add migration files or plan live-data
-  conversion until the user explicitly requests the migration phase.
+  conversion unless explicitly requested by the user.
 
 ## Source capture and acceptance rules
 
@@ -209,8 +217,13 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   unavoidable adapter conversions and resolve source/technical name collisions
   explicitly without discarding original fields.
 - Require explicitly configured non-NULL unique stable keys before row ingestion;
+  keys must use nonspatial identifiers. Reject geometry/geography/raster key columns
+  before their JSON encoding, including direct array/domain wrappers.
   never use physical row positions. Compare full source state, including geometry.
   Any optional content hash must cover that state and exclude generated metadata.
+  Compare accepted row state and protect history without whole-row JSON conversion:
+  geometry casts to GeoJSON reject MultiSurface and can round coordinates. Preserve
+  exact spatial state, including curves, Z/M and SRID, and raster pixel contents.
   Preserve ordered composite-key columns and the canonical JSON-array-as-text `utt_key`
   representation. Accepted key definitions are immutable; reject and re-stage pending
   imports before changing their key definition.
@@ -276,11 +289,16 @@ PostgreSQL so the team can understand, discuss and maintain them together.
 ## Native-file rules
 
 - Keep external-file reference history directly in `mirror.registry`, with immutable
-  row identity, path/namespace, format, size, checksum/algorithm, `utt_txn` and creating
+  row identity, path/namespace, format, size, checksum/algorithm, `file_txn` and creating
   import. Do not require geometry, conversion, a foreign table or payload decoding.
   Give independently versioned files separate logical identities, not JSON file lists.
   Do not invent relational column schemas for opaque native files; retain format and
   available published structure metadata instead.
+- Permit native-file re-registration after retirement with a new registry row.
+  Exclude retired registrations from active-file uniqueness and range-overlap checks,
+  and select only non-retired registrations for ingestion, acceptance and rejection.
+  Preserve old rows, checksums, file_txn ranges and import references. Retirement
+  does not close an accepted range; archived ranges may overlap a later registration.
 - Permit an initial unaccepted registration without an open history range. Refresh
   resolves current logical identity; imports reference exact registry rows.
   Stage file evidence through the same import lifecycle without overwriting accepted

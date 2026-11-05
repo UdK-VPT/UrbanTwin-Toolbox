@@ -63,7 +63,7 @@ Registry fields have different maintenance responsibilities:
 | `row_id`, `source_name`, `layer_name`, `source_type`, `storage_mode`, `source_url`, `import_scope`, `table_base`, `registered_at`, `path_namespace`, `file_format` | Registration identity/access and storage contract, established through registration routines. Do not repurpose referenced identities or rename generated relations by editing the registry. |
 | `stored_table` | Generated column derived from `table_base`; never edited. |
 | `last_imported_at`, `source_revision_at`, `extent` | Routine-maintained acceptance/advertised revision/bounds summaries. |
-| `utt_txn`, `import_id`, `file_size`, `file_checksum`, `checksum_algorithm` | Accepted native-file reference evidence maintained by acceptance. NULL where inapplicable. |
+| `file_txn`, `import_id`, `file_size`, `file_checksum`, `checksum_algorithm` | Accepted native-file reference evidence maintained by acceptance. NULL where inapplicable. |
 | `retired` | Retirement state managed through `unregister_source`. |
 
 ### 2. Capture, inspect and publish
@@ -96,7 +96,7 @@ and contents, while readers inspect staging/current/history as permitted:
 
 Native-file datasets have no `_source`, `_stored` or current-view relations. Their
 pending `mirror.<source_layer>_staging` table contains a one-file manifest; accepted
-reference history stays in the registry. Query it by logical identity and `utt_txn`.
+reference history stays in the registry. Query it by logical identity and `file_txn`.
 Imports retain exact registry-version references across file replacements.
 
 A source version's `import_id` identifies its creating accepted import. That import's

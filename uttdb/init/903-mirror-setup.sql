@@ -24,22 +24,24 @@ CREATE TABLE mirror.registry (
   file_checksum text,
   checksum_algorithm text CHECK (checksum_algorithm = 'sha256-chain-1m-v1'),
   path_namespace text,
-  utt_txn tstzrange,
+  file_txn tstzrange,
   import_id bigint,
-  CHECK ((storage_mode = 'rows' AND table_base IS NOT NULL AND utt_txn IS NULL AND import_id IS NULL)
+  CHECK ((storage_mode = 'rows' AND table_base IS NOT NULL AND file_txn IS NULL AND import_id IS NULL)
     OR (storage_mode = 'external_file' AND source_type = 'file' AND table_base IS NULL
       AND path_namespace IS NOT NULL AND file_format IS NOT NULL
-      AND (utt_txn IS NULL OR (file_size IS NOT NULL AND file_checksum IS NOT NULL AND checksum_algorithm IS NOT NULL AND import_id IS NOT NULL)))),
-  CHECK (utt_txn IS NULL OR (NOT isempty(utt_txn) AND NOT lower_inf(utt_txn)
-    AND isfinite(lower(utt_txn)) AND lower_inc(utt_txn) AND NOT upper_inc(utt_txn)
-    AND (upper_inf(utt_txn) OR isfinite(upper(utt_txn))))),
+      AND (file_txn IS NULL OR (file_size IS NOT NULL AND file_checksum IS NOT NULL AND checksum_algorithm IS NOT NULL AND import_id IS NOT NULL)))),
+  CHECK (file_txn IS NULL OR (NOT isempty(file_txn) AND NOT lower_inf(file_txn)
+    AND isfinite(lower(file_txn)) AND lower_inc(file_txn) AND NOT upper_inc(file_txn)
+    AND (upper_inf(file_txn) OR isfinite(upper(file_txn))))),
   EXCLUDE USING gist (source_name WITH =, layer_name WITH =, storage_mode WITH <>),
-  EXCLUDE USING gist (source_name WITH =, layer_name WITH =, utt_txn WITH &&)
-    WHERE (storage_mode = 'external_file')
+  EXCLUDE USING gist (source_name WITH =, layer_name WITH =, file_txn WITH &&)
+    WHERE (storage_mode = 'external_file' AND NOT retired)
 );
 CREATE UNIQUE INDEX registry_rows_identity ON mirror.registry(source_name, layer_name) WHERE storage_mode = 'rows';
+-- Retired references retain their ranges; uniqueness/coexistence checks govern
+-- non-retired registrations so a retired file source can be registered again.
 CREATE UNIQUE INDEX registry_file_current ON mirror.registry(source_name, layer_name)
-  WHERE storage_mode = 'external_file' AND (utt_txn IS NULL OR upper_inf(utt_txn));
+  WHERE storage_mode = 'external_file' AND NOT retired AND (file_txn IS NULL OR upper_inf(file_txn));
 CREATE UNIQUE INDEX registry_table_base ON mirror.registry(table_base) WHERE table_base IS NOT NULL;
 CREATE INDEX registry_extent_idx ON mirror.registry USING gist(extent);
 COMMENT ON TABLE mirror.registry IS 'Dataset identity and access; external-file accepted versions are stored directly here. row_id identifies a registration version; source_name/layer_name repeats across file versions. Retire rather than delete referenced registrations.';
@@ -51,7 +53,7 @@ COMMENT ON COLUMN mirror.registry.source_revision_at IS 'Latest advertised revis
 COMMENT ON COLUMN mirror.registry.stable_key IS 'Ordered source-column names forming a non-NULL unique logical key. Configure explicitly before row ingestion; never infer from physical row positions.';
 COMMENT ON COLUMN mirror.registry.source_url IS 'WFS endpoint or server-side file path. File namespace is path_namespace; container files use /source-files paths.';
 COMMENT ON COLUMN mirror.registry.table_base IS 'Unique registry-controlled base: _source adapter, _staging cache, _stored history; unsuffixed name is the read-only current view. NULL for external files.';
-COMMENT ON COLUMN mirror.registry.utt_txn IS 'Accepted external-file reference system time [start,end); NULL for database-row registrations and unaccepted file registrations.';
+COMMENT ON COLUMN mirror.registry.file_txn IS 'Accepted external-file reference system time [start,end); NULL for database-row registrations and unaccepted file registrations.';
 
 CREATE TABLE mirror.import (
   import_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -94,11 +96,12 @@ CREATE TABLE mirror.source_columns (
 COMMENT ON TABLE mirror.source_columns IS 'Immutable distinct source-column definition sets per registration, including original order/type/comments. Imports reuse an equal structure_version, including older sets; only new structures add rows. Absent historical columns are distinct from supplied NULLs.';
 
 -- Only history closure and registry operational summaries may alter accepted state.
-CREATE FUNCTION mirror.protect_metadata() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
+CREATE FUNCTION mirror.protect_metadata() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog SET extra_float_digits=3 AS $$
+DECLARE compared_new mirror.registry%ROWTYPE;
 BEGIN
   IF TG_OP='TRUNCATE' THEN RAISE EXCEPTION 'Metadata cannot be truncated.'; END IF;
   IF TG_TABLE_NAME = 'registry' AND TG_OP <> 'DELETE' THEN
-   IF NEW.storage_mode='external_file' AND NEW.utt_txn IS NOT NULL THEN
+   IF NEW.storage_mode='external_file' AND NEW.file_txn IS NOT NULL THEN
     IF NOT EXISTS(SELECT FROM mirror.import i JOIN mirror.registry r ON r.row_id=i.registry_row_id
       WHERE i.import_id=NEW.import_id AND i.status='accepted'
         AND r.source_name=NEW.source_name AND r.layer_name=NEW.layer_name AND r.storage_mode='external_file') THEN
@@ -111,13 +114,20 @@ BEGIN
     IF OLD.status = 'accepted' THEN RAISE EXCEPTION 'Accepted imports are immutable.'; END IF;
   ELSIF TG_TABLE_NAME = 'source_columns' THEN
     RAISE EXCEPTION 'Schema definitions are immutable.';
-  ELSIF OLD.storage_mode = 'external_file' AND OLD.utt_txn IS NOT NULL THEN
-    IF TG_OP = 'DELETE' OR
-      (to_jsonb(OLD) - ARRAY['utt_txn','last_imported_at','retired']) IS DISTINCT FROM
-      (to_jsonb(NEW) - ARRAY['utt_txn','last_imported_at','retired'])
-      OR (NEW.utt_txn IS DISTINCT FROM OLD.utt_txn AND
-        (NOT upper_inf(OLD.utt_txn) OR NEW.utt_txn IS NULL OR upper_inf(NEW.utt_txn)
-          OR lower(NEW.utt_txn) IS DISTINCT FROM lower(OLD.utt_txn))) THEN
+  ELSIF OLD.storage_mode = 'external_file' AND OLD.file_txn IS NOT NULL THEN
+    IF TG_OP='DELETE' THEN
+      RAISE EXCEPTION 'Accepted file references are immutable except for system-time closure and retirement.';
+    END IF;
+    -- Mask only allowed operational changes in a local copy. Native row output
+    -- preserves extent geometry without invoking its implicit GeoJSON cast.
+    compared_new := NEW;
+    compared_new.file_txn := OLD.file_txn;
+    compared_new.last_imported_at := OLD.last_imported_at;
+    compared_new.retired := OLD.retired;
+    IF (compared_new::text COLLATE "C") IS DISTINCT FROM (OLD::text COLLATE "C")
+      OR (NEW.file_txn IS DISTINCT FROM OLD.file_txn AND
+        (NOT upper_inf(OLD.file_txn) OR NEW.file_txn IS NULL OR upper_inf(NEW.file_txn)
+          OR lower(NEW.file_txn) IS DISTINCT FROM lower(OLD.file_txn))) THEN
       RAISE EXCEPTION 'Accepted file references are immutable except for system-time closure and retirement.';
     END IF;
   ELSIF TG_OP = 'UPDATE' AND (NEW.source_name,NEW.layer_name,NEW.storage_mode) IS DISTINCT FROM
@@ -140,7 +150,7 @@ CREATE TRIGGER protect_import_truncate BEFORE TRUNCATE ON mirror.import EXECUTE 
 CREATE TRIGGER protect_source_columns_truncate BEFORE TRUNCATE ON mirror.source_columns EXECUTE FUNCTION mirror.protect_metadata();
 CREATE TRIGGER protect_registry_truncate BEFORE TRUNCATE ON mirror.registry EXECUTE FUNCTION mirror.protect_metadata();
 CREATE TRIGGER protect_registry BEFORE INSERT OR UPDATE OR DELETE ON mirror.registry FOR EACH ROW EXECUTE FUNCTION mirror.protect_metadata();
-COMMENT ON FUNCTION mirror.protect_metadata() IS 'Integrity trigger for metadata writes by DBAs: rejects edits/deletion of accepted imports and schema definitions, and rewrites of accepted file state. Returns allowed NEW/OLD row. Example firing the trigger: UPDATE mirror.import SET data_revision_at = now() WHERE status = ''accepted''; -- rejected.';
+COMMENT ON FUNCTION mirror.protect_metadata() IS 'Integrity trigger for metadata writes by DBAs: rejects edits/deletion of accepted imports and schema definitions, and rewrites of accepted file state, comparing native row output without GeoJSON conversion of extent. Returns allowed NEW/OLD row. Example firing the trigger: UPDATE mirror.import SET data_revision_at = now() WHERE status = ''accepted''; -- rejected.';
 
 REVOKE ALL ON mirror.registry, mirror.import, mirror.source_columns FROM PUBLIC, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
 GRANT SELECT ON mirror.registry, mirror.import, mirror.source_columns TO uttdb_reader, uttdb_developer, uttdb_pipeline;
@@ -643,22 +653,32 @@ $$;
 COMMENT ON FUNCTION mirror.register_external_file(text,text,text,text) IS 'DBA registration of one independently versioned native file dataset directly in mirror.registry. Validates readability but stores no payload or accepted history; returns registry row_id. No PostGIS conversion or foreign relation. Example: SELECT mirror.register_external_file(''climate'',''temperature'',''/source-files/climate/v1.nc'',''NetCDF''); Then SELECT mirror.store_layer(''climate'',''temperature'');';
 
 -- Accepted history is append-only except for closing the current system-time bound.
-CREATE FUNCTION mirror.protect_history() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog AS $$
-DECLARE accepted_registry bigint;
+CREATE FUNCTION mirror.protect_history() RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog SET extra_float_digits=3 AS $$
+DECLARE accepted_registry bigint; compared_new record;
 BEGIN
   IF TG_OP='TRUNCATE' THEN RAISE EXCEPTION 'Source history cannot be truncated.'; END IF;
   IF TG_OP = 'INSERT' THEN
     SELECT registry_row_id INTO accepted_registry FROM mirror.import WHERE import_id = NEW.import_id AND status = 'accepted';
     IF accepted_registry IS DISTINCT FROM TG_ARGV[0]::bigint THEN RAISE EXCEPTION 'History requires an accepted import for this dataset.'; END IF;
-  ELSIF TG_OP = 'DELETE' OR (to_jsonb(NEW) - 'utt_txn') IS DISTINCT FROM (to_jsonb(OLD) - 'utt_txn')
-    OR NOT upper_inf(OLD.utt_txn) OR upper_inf(NEW.utt_txn)
-    OR lower(NEW.utt_txn) IS DISTINCT FROM lower(OLD.utt_txn) THEN
-    RAISE EXCEPTION 'Source history is immutable except for current system-time closure.';
+  ELSE
+    IF TG_OP='DELETE' THEN
+      RAISE EXCEPTION 'Source history is immutable except for current system-time closure.';
+    END IF;
+    -- Native row text uses lossless PostGIS geometry/raster output, not GeoJSON.
+    -- Raster has no binary-send function, so generic record_send is unsuitable.
+    -- Only the time range may differ; this copy never changes the stored old row.
+    compared_new := NEW;
+    compared_new.utt_txn := OLD.utt_txn;
+    IF (compared_new::text COLLATE "C") IS DISTINCT FROM (OLD::text COLLATE "C")
+      OR NOT upper_inf(OLD.utt_txn) OR upper_inf(NEW.utt_txn)
+      OR lower(NEW.utt_txn) IS DISTINCT FROM lower(OLD.utt_txn) THEN
+      RAISE EXCEPTION 'Source history is immutable except for current system-time closure.';
+    END IF;
   END IF;
   RETURN NEW;
 END;
 $$;
-COMMENT ON FUNCTION mirror.protect_history() IS 'Trigger installed by acceptance on each _stored table: checks creating accepted-import ownership, prevents deletion/state rewrites and allows current-range closure only. Returns NEW. Example firing it: DELETE FROM mirror.example_stored; -- rejected.';
+COMMENT ON FUNCTION mirror.protect_history() IS 'Trigger installed by acceptance on each _stored table: checks creating accepted-import ownership, prevents deletion/state rewrites using lossless native row output without GeoJSON conversion, and allows current-range closure only. Returns NEW. Example firing it: DELETE FROM mirror.example_stored; -- rejected.';
 
 -- Capture once. Validation errors or threshold failures retain this exact cache.
 CREATE OR REPLACE FUNCTION mirror.store_layer(source_name text, layer_name text,
@@ -673,7 +693,7 @@ BEGIN
   IF review IS NULL THEN RAISE EXCEPTION 'review must be true or false.'; END IF;
   SELECT r.* INTO STRICT entry FROM mirror.registry r
   WHERE r.source_name = store_layer.source_name AND r.layer_name = store_layer.layer_name
-    AND NOT r.retired AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn)) FOR UPDATE;
+    AND NOT r.retired AND (r.file_txn IS NULL OR upper_inf(r.file_txn)) FOR UPDATE;
   IF EXISTS (SELECT FROM mirror.import WHERE registry_row_id = entry.row_id AND status = 'staged') THEN
     RAISE EXCEPTION 'Accept or reject the pending import before fetching again.';
   END IF;
@@ -743,6 +763,13 @@ BEGIN
       OR EXISTS (SELECT FROM unnest(entry.stable_key) k WHERE k IS NULL OR NOT EXISTS
         (SELECT FROM mirror.source_columns WHERE registry_row_id=entry.row_id AND structure_version=captured_revision AND column_name=k)) THEN
       errors := array_append(errors,'Configure nonempty, distinct stable_key source columns before ingestion.');
+    ELSIF EXISTS (SELECT FROM mirror.source_columns c JOIN pg_type t ON t.oid=c.type_oid
+      WHERE c.registry_row_id=entry.row_id AND c.structure_version=captured_revision
+        AND c.column_name=ANY(entry.stable_key)
+        AND (t.oid IN ('public.geometry'::regtype,'public.geography'::regtype,'public.raster'::regtype)
+          OR t.typelem IN ('public.geometry'::regtype,'public.geography'::regtype,'public.raster'::regtype)
+          OR t.typbasetype IN ('public.geometry'::regtype,'public.geography'::regtype,'public.raster'::regtype))) THEN
+      errors := array_append(errors,'Stable keys must use nonspatial identifier columns, not geometry, geography or raster.');
     ELSE
       SELECT string_agg(format('%I IS NULL',k),' OR ' ORDER BY n),
         'jsonb_build_array(' || string_agg(format('%I',k),',' ORDER BY n) || ')::text'
@@ -817,7 +844,7 @@ COMMENT ON FUNCTION mirror.store_layer(text,text,boolean,text,text) IS 'DBA stag
 
 CREATE OR REPLACE FUNCTION mirror.accept_layer(source_name text,layer_name text,
   automatic boolean DEFAULT false)
-RETURNS void LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog SET TimeZone='UTC' AS $$
+RETURNS void LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog SET TimeZone='UTC' SET extra_float_digits=3 AS $$
 DECLARE
   entry mirror.registry%ROWTYPE; pending mirror.import%ROWTYPE; stage_oid oid; history_oid oid;
   evidence record; manifest record; attr record; columns_sql text; source_columns text; old_columns text;
@@ -826,7 +853,7 @@ DECLARE
 BEGIN
   SELECT r.* INTO STRICT entry FROM mirror.registry r WHERE r.source_name=accept_layer.source_name
     AND r.layer_name=accept_layer.layer_name AND NOT r.retired
-    AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn)) FOR UPDATE;
+    AND (r.file_txn IS NULL OR upper_inf(r.file_txn)) FOR UPDATE;
   SELECT * INTO STRICT pending FROM mirror.import WHERE registry_row_id=entry.row_id AND status='staged' FOR UPDATE;
   IF automatic AND (pending.manual_review OR cardinality(pending.validation_errors)>0 OR cardinality(pending.threshold_failures)>0) THEN
     RAISE EXCEPTION 'Import requires manual review or validation repair.';
@@ -847,16 +874,16 @@ BEGIN
     UPDATE mirror.import SET status='accepted',staging_table=NULL,accepted_at=at_time,
       acceptance_method=CASE WHEN automatic THEN 'automatic' ELSE 'manual' END,validation_errors='{}'
     WHERE import_id=pending.import_id;
-    IF entry.utt_txn IS NULL THEN
+    IF entry.file_txn IS NULL THEN
       UPDATE mirror.registry SET source_url=manifest.file_path,file_format=manifest.file_format,
         file_size=manifest.file_size,file_checksum=manifest.file_checksum,checksum_algorithm='sha256-chain-1m-v1',
-        utt_txn=tstzrange(at_time,NULL,'[)'),import_id=pending.import_id,last_imported_at=at_time WHERE row_id=entry.row_id;
+        file_txn=tstzrange(at_time,NULL,'[)'),import_id=pending.import_id,last_imported_at=at_time WHERE row_id=entry.row_id;
     ELSIF (entry.source_url,entry.file_format,entry.file_size,entry.file_checksum) IS DISTINCT FROM
       (manifest.file_path,manifest.file_format,manifest.file_size,manifest.file_checksum) THEN
-      UPDATE mirror.registry SET utt_txn=tstzrange(lower(utt_txn),at_time,'[)') WHERE row_id=entry.row_id;
+      UPDATE mirror.registry SET file_txn=tstzrange(lower(file_txn),at_time,'[)') WHERE row_id=entry.row_id;
       INSERT INTO mirror.registry(source_name,layer_name,source_type,storage_mode,source_url,import_scope,
         registered_at,last_imported_at,title,description,fees,access_constraints,source_owner,coverage,extent,file_format,path_namespace,
-        file_size,file_checksum,checksum_algorithm,utt_txn,import_id,change_threshold_percent)
+        file_size,file_checksum,checksum_algorithm,file_txn,import_id,change_threshold_percent)
       VALUES(entry.source_name,entry.layer_name,'file','external_file',manifest.file_path,entry.import_scope,
         entry.registered_at,at_time,entry.title,entry.description,entry.fees,entry.access_constraints,entry.source_owner,entry.coverage,entry.extent,
         manifest.file_format,entry.path_namespace,manifest.file_size,manifest.file_checksum,'sha256-chain-1m-v1',
@@ -883,6 +910,14 @@ BEGIN
       OR EXISTS(SELECT FROM unnest(entry.stable_key) k GROUP BY k HAVING count(*)>1)
       OR EXISTS(SELECT FROM unnest(entry.stable_key) k WHERE k IS NULL OR NOT EXISTS(SELECT FROM pg_attribute WHERE attrelid=stage_oid AND attname=k AND NOT attisdropped)) THEN
       RAISE EXCEPTION 'Configure valid distinct stable-key columns.';
+    END IF;
+    IF EXISTS (SELECT FROM pg_attribute a JOIN pg_type t ON t.oid=a.atttypid
+      WHERE a.attrelid=stage_oid AND a.attnum>0 AND NOT a.attisdropped
+        AND a.attname=ANY(entry.stable_key)
+        AND (t.oid IN ('public.geometry'::regtype,'public.geography'::regtype,'public.raster'::regtype)
+          OR t.typelem IN ('public.geometry'::regtype,'public.geography'::regtype,'public.raster'::regtype)
+          OR t.typbasetype IN ('public.geometry'::regtype,'public.geography'::regtype,'public.raster'::regtype))) THEN
+      RAISE EXCEPTION 'Stable keys must use nonspatial identifier columns, not geometry, geography or raster.';
     END IF;
     IF EXISTS(SELECT FROM pg_attribute WHERE attrelid=stage_oid AND attnum>0 AND attname IN ('row_id','utt_txn','import_id','utt_key')) THEN
       RAISE EXCEPTION 'Reserved metadata column collision; explicitly rename in adapter.';
@@ -941,7 +976,10 @@ BEGIN
     SELECT array_agg(i.import_id) INTO schema_changed_imports FROM mirror.import i
     WHERE i.registry_row_id=entry.row_id AND i.status='accepted'
       AND i.structure_version<>pending.structure_version;
-    changed_sql := format('(to_jsonb(ROW(%s)) IS DISTINCT FROM to_jsonb(ROW(%s)) OR h.import_id=ANY($2))',old_columns,source_columns);
+    -- Native row output retains exact geometry/raster state, NULLs and typed
+    -- source values. Whole-row JSON would invoke the GeoJSON cast, which rejects
+    -- MultiSurface and can round coordinates on otherwise supported geometries.
+    changed_sql := format('((ROW(%s)::text COLLATE "C") IS DISTINCT FROM (ROW(%s)::text COLLATE "C") OR h.import_id=ANY($2))',old_columns,source_columns);
     EXECUTE format('UPDATE %s h SET utt_txn=tstzrange(lower(h.utt_txn),$1,''[)'')
       FROM %s s WHERE upper_inf(h.utt_txn) AND h.utt_key=%s AND %s',
       history_oid::regclass,stage_oid::regclass,key_sql,changed_sql) USING at_time,schema_changed_imports;
@@ -988,13 +1026,14 @@ RETURNS void LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
 DECLARE entry mirror.registry%ROWTYPE; pending mirror.import%ROWTYPE;
 BEGIN
   SELECT r.* INTO STRICT entry FROM mirror.registry r WHERE r.source_name=reject_layer.source_name
-    AND r.layer_name=reject_layer.layer_name AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn)) FOR UPDATE;
+    AND r.layer_name=reject_layer.layer_name AND NOT r.retired
+    AND (r.file_txn IS NULL OR upper_inf(r.file_txn)) FOR UPDATE;
   SELECT * INTO STRICT pending FROM mirror.import WHERE registry_row_id=entry.row_id AND status='staged' FOR UPDATE;
   EXECUTE format('DROP TABLE mirror.%I',pending.staging_table);
   UPDATE mirror.import SET status='rejected',staging_table=NULL WHERE import_id=pending.import_id;
 END;
 $$;
-COMMENT ON FUNCTION mirror.reject_layer(text,text) IS 'DBA rejection of a pending import. Drops its staging cache, marks import rejected and preserves accepted data and original files. Returns void. Example: SELECT mirror.reject_layer(''berlin_alkis'',''alkis:bezirk'');';
+COMMENT ON FUNCTION mirror.reject_layer(text,text) IS 'DBA rejection of a pending import for the non-retired registration. Drops its staging cache, marks import rejected and preserves accepted data and original files. Returns void. Example: SELECT mirror.reject_layer(''berlin_alkis'',''alkis:bezirk'');';
 
 CREATE OR REPLACE FUNCTION mirror.unregister_source(source_name text,layer_name text DEFAULT NULL)
 RETURNS void LANGUAGE plpgsql SECURITY INVOKER SET search_path=pg_catalog AS $$
@@ -1002,7 +1041,7 @@ DECLARE entry mirror.registry%ROWTYPE; found_entry boolean := false;
 BEGIN
   FOR entry IN SELECT r.* FROM mirror.registry r WHERE r.source_name=unregister_source.source_name
     AND (unregister_source.layer_name IS NULL OR r.layer_name=unregister_source.layer_name)
-    AND NOT r.retired AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn)) ORDER BY r.layer_name FOR UPDATE
+    AND NOT r.retired AND (r.file_txn IS NULL OR upper_inf(r.file_txn)) ORDER BY r.layer_name FOR UPDATE
   LOOP
     found_entry:=true;
     IF EXISTS(SELECT FROM mirror.import WHERE registry_row_id=entry.row_id AND status='staged') THEN
@@ -1023,12 +1062,12 @@ BEGIN
   IF review IS NULL OR (skip_interval IS NOT NULL AND skip_interval<interval '0')
     OR (source_type IS NOT NULL AND source_type NOT IN ('wfs','file')) THEN RAISE EXCEPTION 'Invalid refresh options.'; END IF;
   FOR selected IN SELECT r.source_name,r.layer_name FROM mirror.registry r
-    WHERE NOT r.retired AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn))
+    WHERE NOT r.retired AND (r.file_txn IS NULL OR upper_inf(r.file_txn))
       AND (update_registered_sources.source_type IS NULL OR r.source_type=update_registered_sources.source_type)
     ORDER BY r.source_name,r.layer_name
   LOOP
     SELECT r.* INTO entry FROM mirror.registry r WHERE r.source_name=selected.source_name AND r.layer_name=selected.layer_name
-      AND NOT r.retired AND (r.utt_txn IS NULL OR upper_inf(r.utt_txn)) FOR UPDATE;
+      AND NOT r.retired AND (r.file_txn IS NULL OR upper_inf(r.file_txn)) FOR UPDATE;
     IF FOUND THEN
       IF entry.source_type='wfs' AND checked_source IS DISTINCT FROM entry.source_name THEN
         WITH revisions AS MATERIALIZED(SELECT * FROM mirror.wfs_revision_dates(entry.source_url))

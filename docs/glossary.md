@@ -31,9 +31,9 @@ Key terms used in the [metadata model](metadata-modelling.md).
 | Stable object key | Dataset-scoped identity repeated across an object's versions; `utt_key` is its technical representation in source history. |
 | Version | One stored state with immutable `row_id`, distinct from the object's repeatable logical identity. |
 | Stored history | `_stored`: accepted source states with their version and creating-import metadata. |
-| System time | `utt_txn tstzrange`: when UTT considered a version current, rather than when reality changed. The model's only general temporal axis. |
+| System time | `utt_txn tstzrange` for row history; `mirror.registry.file_txn` for native-file history: when UTT considered a version current, rather than when reality changed. The model's only general temporal axis. |
 | Half-open range | `[start, end)` includes its opening and excludes its closing instant; adjacent versions share a boundary without overlapping. |
-| Current version | A version with an unbounded system-time end, selected by `upper_inf(utt_txn)`. |
+| Current version | A version with an unbounded system-time end, selected by `upper_inf(utt_txn)` for rows or `upper_inf(file_txn)` for native-file references. |
 | Source date | An ordinary source attribute, not another temporal axis; mapped date changes count as content changes. |
 | Observed history | States actually accepted by UTT; changes between observations cannot be reconstructed. |
 | Withdrawal | Closing a current source version absent from an accepted full snapshot; not proof of real-world cessation. |
