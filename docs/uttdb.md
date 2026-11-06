@@ -10,16 +10,66 @@ Image versions and build settings live in `compose.yml`.
 | Schema | Purpose |
 | --- | --- |
 | `citydb` | 3DCityDB's 3D city model |
+| `citydb_pkg` | 3DCityDB routines |
 | `mirror` | All source data, metadata, ingestion routines and accepted history |
 | `utt_pkg` | Shared administration helpers, including developer sandbox provisioning |
 | `curation` | Project SQL procedures, snapshot tables and current build identity |
 
-[Initialization SQL](../uttdb/init/) creates extensions and NOLOGIN group roles:
-`uttdb_dba`, `uttdb_reader`, `uttdb_developer`, `uttdb_pipeline`,
-`uttdb_app_reader` and `uttdb_app_writer`. A DBA provisions developer sandboxes with
-`SELECT utt_pkg.create_developer_sandbox('existing_login');`. Developers receive read
-access and work in their sandbox; pipeline users execute the Berlin build procedure
-without direct curated-table writes. App writers receive no curation entry point.
+[Initialization SQL](../uttdb/init/) defines exactly two NOLOGIN privilege roles:
+`utt_admin` for trusted administration and `utt_developer` for researchers and developers.
+Each human uses an individual login. Developers read tables/views in `mirror`,
+`curation`, `utt_pkg`, `citydb` and `citydb_pkg`, and write only in their own sandbox.
+Shared sequences cannot be advanced by developers. Mutating routines are admin-only;
+the bounded, read-only `mirror.read_geotiff(text)` reader also permits developer
+queries against registered raster source views. No generic service roles are created.
+
+All privilege policy, provisioning and the future-object DDL hook live in `902`.
+Shared objects are owned by `utt_admin`; the hook covers individual administrator
+DDL and adapters moved into shared schemas. Creator-specific default privileges
+provide developer table reads and revoke default public routine execution.
+Existing 3DCityDB tables/routines retain their definitions but receive administrative
+ownership; extension members retain their upstream ownership. Ordinary administrators
+are not superusers. They inherit server-file read permissions for trusted source
+administration. Bootstrap-owned provisioning routines and the DDL hook are narrow
+privileged boundaries; their definitions and event-trigger lifecycle require the
+bootstrap superuser. No metadata tables or auditing columns are added.
+
+### Human accounts and sandboxes
+
+Connect as the installation login configured by `UTTDB_POSTGRES_USER` to provision
+the first administrator; `902` grants that bootstrap login `utt_admin` membership.
+Subsequent provisioning calls run from individual administrator sessions:
+
+```sql
+CALL utt_pkg.create_admin('bob');
+CALL utt_pkg.create_developer('alice'); -- returns login_name and sandbox_schema
+SELECT utt_pkg.create_developer_sandbox('alice'); -- safely repeat existing setup
+CALL utt_pkg.deactivate_account('alice'); -- NOLOGIN; retains sandbox and data
+```
+
+Accounts are created without passwords. Configure authentication through deployment
+administration; for password authentication, use the bootstrap login's psql
+`\password alice` command. Do not place passwords in initialization files or tables.
+Deactivation prevents new logins; existing sessions remain connected. Sandbox deletion
+is a separate explicit administrator operation, such as
+`DROP SCHEMA sandbox_alice CASCADE`; it does not delete the account.
+
+Developer names must be lowercase ASCII identifiers beginning with a letter;
+`sandbox_<login>` must fit PostgreSQL's 63-byte identifier limit. Names are rejected
+rather than normalized or truncated. Duplicate account creation fails. Sandbox
+provisioning reuses only the expected owner's schema and preserves existing work.
+A new developer sandbox contains no objects. Its owner can create and remove objects;
+all developers automatically receive reads on new owner-created tables and views.
+Administrators inherit ownership rights through membership in developer login roles.
+An administrator may explicitly request a sandbox too; it uses inherited `utt_admin`
+ownership to avoid PostgreSQL's prohibition on circular role membership.
+
+Sandbox owners can deliberately revoke peer reads or grant additional access to their
+own objects: native ownership permits this. Defaults establish the collaboration
+policy, rather than restricting an owner's ability to change it. Normal shared-object
+DDL needs no follow-up grants. Privileged operators must not disable the policy hook
+or override shared ownership/ACLs. External application permissions require explicit
+component-specific deployment configuration.
 
 Core files `901`–`903` initialize mirror and infrastructure without `curation`.
 `913-curation.sql` adds the optional Berlin demonstration: six ordinary entity tables and
@@ -104,7 +154,7 @@ timestamp. Unchanged objects keep their identities; an unchanged successful impo
 still creates an immutable accepted-import record. `utt_key` is a canonical JSON
 array serialized as text for the configured source key; it is technical metadata,
 not a substitute for preserving source columns. Accepted versions reference their
-creating `import_id`. History and current views reject ordinary pipeline writes.
+creating `import_id`. Developers cannot write history or current views.
 
 Every row ingestion is treated as the full snapshot of its registered source scope.
 Acceptance closes current mirror versions whose stable keys are missing from that
@@ -233,7 +283,7 @@ Missing required accepted inputs or recipe columns fail the build clearly.
 
 The public procedure calls six entity procedures to prepare indexed temporary tables,
 then a relationship procedure over those curated tables. These internal steps run
-with the same snapshot/region and have no pipeline execution grants. The complete
+with the same snapshot/region and are restricted to administrators. The complete
 replacement and `dataset_build` row commit together; failed preparation or installation
 preserves the previous dataset. Concurrent builds serialize through an advisory lock;
 an exclusive registry lock prevents source publication during input selection.
@@ -273,6 +323,8 @@ n:m relations, privilege boundaries and failed installation rollback.
 [source-columns.sql](../tests/source-columns.sql) independently checks schema reuse.
 [spatial-relations.sql](../tests/spatial-relations.sql) checks fractions, empty and
 zero-area geometries, pair uniqueness, reruns and a 3,000-row spatial-index plan.
+[privileges.sql](../tests/privileges.sql) checks individual administrator/developer
+sessions, provisioning, future-object access and denied writes.
 All checks run against a disposable database and roll back their data. Remove the
 generated native-file fixtures after testing.
 

@@ -13,6 +13,69 @@ take precedence.
 
 Keep final answers concise: normally 5–15 sentences or at most five short bullets.
 
+## Architecture and Development Principles
+
+### Purpose and scope
+
+UrbanTwin Toolbox (UTT) is a long-lived, PostgreSQL-native research data infrastructure for heterogeneous urban data. Its purpose is to enable scientific work, not to become an all-purpose data engineering platform.
+
+Prioritize a reliable, understandable prototype and complete research workflows over expanding generic infrastructure. UTT should eventually require little attention from its maintainers so they can focus on research.
+
+### Core principles
+
+1. **PostgreSQL/PostGIS first.** Prefer server-side, set-based SQL for ingestion, transformation, spatial operations, aggregation and data management. Avoid transferring large datasets into Python or other applications for operations that can be performed efficiently in the database.
+
+2. **Reuse before implementing.** Actively consider established open-source tools, libraries and PostgreSQL extensions before proposing custom functionality. Recommend adoption when an existing solution offers substantial benefits with reasonable integration and maintenance costs.
+
+3. **Avoid dependency proliferation.** Prefer a small native implementation when an external tool would introduce disproportionate dependencies, deployment requirements or orchestration complexity for a limited subset of its functionality. Consider total lifecycle cost, not just implementation effort.
+
+4. **Keep the core conservative.** UTT core infrastructure should be stable, transparent, testable and maintainable for years. Prefer readable tables, explicit metadata, conventional SQL and established standards over elaborate abstractions.
+
+5. **Keep functional modules independent.** Functional containers (idioca-style boxes) may use any appropriate language, framework or scientific library. They should interact with UTT through defined interfaces, preserve input/output provenance and avoid requiring changes to the core for application-specific functionality.
+
+6. **Minimize researcher-facing complexity.** Researchers should interact primarily with a unified administration interface and their scientific applications, not a collection of specialized infrastructure tools. Internal technical complexity must not become a prerequisite for using UTT.
+
+7. **Design for sustained operation.** Core workflows must be repeatable, recoverable, testable and suitable for unattended server execution. Account for interrupted processing, updates, failures, concurrent access and maintainability beyond the original developer.
+
+8. **Preserve replaceability.** Prefer established data formats, standards and explicit component boundaries. Custom implementations should not unnecessarily prevent later replacement by existing tools.
+
+9. **Avoid speculative generalization.** Implement functionality in response to demonstrated research requirements. Prefer a complete working use case over an unused generic capability. Do not expand scope merely because AI-assisted development makes implementation inexpensive.
+
+10. **Optimize for human maintainability.** AI-generated code must remain understandable, documented and testable. Development speed is not sufficient justification for architectural complexity.
+
+### Build-versus-adopt decision
+
+Before implementing a substantial new capability, evaluate:
+
+- Is an established tool, library, standard or PostgreSQL extension already available?
+- Does it solve most of the actual requirement, or would we use only a small fraction?
+- What are its installation, configuration, orchestration, dependency and maintenance costs?
+- Would a PostgreSQL-native implementation be substantially simpler over its entire lifecycle?
+- Does either solution introduce additional concepts or tools that researchers must understand?
+- Can the chosen implementation be maintained and replaced independently?
+
+**Codex must proactively alert the developer when a mature, suitable existing solution could reasonably replace planned custom development.** Name the candidate, briefly explain its advantages and trade-offs, and recommend whether to adopt, integrate selectively or implement natively.
+
+Do not automatically introduce dependencies, rewrite existing functionality or expand the architecture. Present significant alternatives before implementation and leave architectural decisions to the developer.
+
+Raise a concise build-versus-adopt alert once during planning when introducing a new infrastructure capability, significant dependency or substantial custom implementation. Do not repeat the assessment for routine implementation tasks within the agreed architecture unless new information changes the decision.
+
+### Complexity budget
+
+Evaluate new features against three costs:
+
+- **Operational complexity:** services, dependencies, deployments, configuration, monitoring and upgrades.
+- **Conceptual complexity:** metadata, abstractions, special cases, interfaces and maintenance knowledge.
+- **User complexity:** additional interfaces, procedures or expertise required from researchers.
+
+A new feature should provide a meaningful benefit relative to these costs. PostgreSQL-native implementations are not automatically simple; their internal complexity must also be justified.
+
+### Definition of success
+
+UTT succeeds when researchers can integrate, update, trace and use urban data through coherent workflows without operating a collection of specialized infrastructure tools, and when a small research team can maintain the system over multiple years.
+
+**Do not maximize what AI makes possible to build. Maximize what researchers can use and maintainers can sustainably operate.**
+
 ## Direction and design priorities
 
 Mirror owns source history; curation owns replaceable snapshot tables and current
@@ -155,8 +218,14 @@ PostgreSQL so the team can understand, discuss and maintain them together.
 - Add a PostgreSQL `COMMENT` to every UTT-owned function or procedure. State its
   purpose, caller, effects, result and a practical SQL example. A trigger-function
   example must show the operation that fires it.
-- Use NOLOGIN group roles as the stable privilege surface. Give developers sandbox
-  schemas instead of broad curated-schema write access.
+- Use exactly two generic NOLOGIN roles: `utt_admin` and `utt_developer`.
+  Keep all privilege policy, account/sandbox provisioning, default privileges and
+  future-object ownership policy in `902-create-privilege-roles.sql`. Do not add
+  generic reader, pipeline or application roles. Give developers read-only shared
+  access and personal sandboxes; define component permissions only when requested.
+  Shared objects use `utt_admin` ownership; preserve extension ownership and narrow
+  bootstrap-owned role-provisioning/event-trigger boundaries. Administrator research
+  sandboxes use inherited `utt_admin` ownership to avoid membership cycles.
 - Add routines only for concrete integrity, privilege, transaction or reuse
   boundaries; prefer direct SQL, constraints and privileges when sufficient.
 - Preserve published source metadata in its original language and wording. Leave
@@ -336,8 +405,8 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   older functional recipes when introducing later versions; Git records exact SQL.
 - Build indexed temporary entity tables, then relationship tables from those same
   inputs. Restrict internal-step execution to DBA/owner and expose only the complete
-  security-definer build procedure to pipelines. Keep output tables read-only for
-  readers, apps and pipelines; app writers receive no build grant.
+  security-definer build procedure to administrators. Developers receive read-only
+  output access and no build grant; applications require explicitly designed access.
 - Serialize builds with advisory transaction lock (70303,1). Hold mirror.registry
   EXCLUSIVE throughout input selection: this blocks acceptance's initial row locks
   and schema changes while allowing plain reads, avoiding publication lock inversions.

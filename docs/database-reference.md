@@ -13,17 +13,16 @@ and accepted inputs for its recipes. Both workflows run in PostgreSQL through
 ## Reading the inventory
 
 **Admin entry** means an administrative workflow operation, currently called by a
-DBA or authorized pipeline role. **Reader** means a read-only query interface.
+member of `utt_admin`. **Reader** means a read-only query interface.
 **Internal** means a helper called by another routine or a database trigger, even
 where a DBA can execute it directly. These categories do not grant permissions.
 Existing roles and transaction requirements remain the access boundary.
 
-`uttdb_dba` configures sources. `uttdb_pipeline` invokes the complete curation
-procedure without direct output/build-metadata writes. Readers and developers can
-inspect mirror history and curated snapshots; app readers inspect curated tables.
-App writers have no curation build grant. Developers write in sandbox schemas.
-The build entry point and selected validation/file helpers use security-definer
-boundaries; routine comments identify the actual callers and effects.
+`utt_admin` administers sources and builds curation datasets. `utt_developer`
+reads the five shared schemas and works in an individual sandbox. Applications
+have no generic role or implicit administrative access. Routine execution is
+restricted by default; the bounded GeoTIFF reader is authorized for developer
+source-view queries. Routine comments identify actual callers and effects.
 
 Initialization creates four metadata tables: `mirror.registry`, `mirror.import`,
 `mirror.source_columns` and `curation.dataset_build`, plus six snapshot entities
@@ -134,8 +133,8 @@ historical provenance or curated-history tables in this demonstration.
 
 | Object | Caller / maintenance | Responsibility |
 |---|---|---|
-| `curate_berlin_20261101` | Procedure; DBA/pipeline entry | Builds and atomically installs six entities, three relationships and build identity. No internal commits; caller transaction controls completion. |
-| `curate_berlin_<entity>_20261101` | Procedures; internal build steps | Read the requested mirror snapshot and create indexed temporary tables. Called by the entry point; no pipeline grants. |
+| `curate_berlin_20261101` | Procedure; Administrator entry | Builds and atomically installs six entities, three relationships and build identity. No internal commits; caller transaction controls completion. |
+| `curate_berlin_<entity>_20261101` | Procedures; internal build steps | Read the requested mirror snapshot and create indexed temporary tables. Called by the entry point; administrator-only execution. |
 | `curate_berlin_relations_20261101` | Procedure; internal chained step | Builds n:m pairs from the same build's entity working tables. |
 | `curation_berlin_source` | Function; internal schema check | Resolves stored source and verifies required columns in the accepted snapshot's exact structure definition. |
 | `dataset_build` | System-maintained table | One current successful dataset identity, updated with all output tables. Human edits are unsupported. |
@@ -153,18 +152,30 @@ It serializes builds with advisory transaction lock `(70303,1)` and holds an exc
 registry lock while selecting accepted inputs. Indexed temporary working tables are
 recreated for each call. Installation uses transactional deletes/inserts, preserving
 output table identities and dependent queries. A failed final step rolls everything
-back. Direct pipeline writes and internal-step execution are not granted; app writers
-receive no build privilege. DBA object owners administer the SQL definitions.
+back. Developers receive no build or internal-step execution privilege.
+Administrators own and maintain the SQL definitions.
 
 ## Shared setup and finding actual objects
 
-`901-setup-structures.sql` creates project schemas/extensions; `902` establishes roles
-and the admin function `utt_pkg.create_developer_sandbox`. A DBA calls that function
-for an existing login; it creates/reuses `sandbox_<role>`, grants developer membership
-and returns the schema name. The developer maintains that sandbox's own objects.
-`903` implements all mirror objects. `913-curation.sql` defines all optional
-project tables and snapshot procedures, including the restricted atomic installation
-boundary. Shared administration helpers remain in `utt_pkg`, initialized by `902`.
+`901-setup-structures.sql` creates project schemas/extensions. `902` contains all
+privilege policy, including bootstrap-owned provisioning and the internal
+`utt_pkg.apply_shared_privileges()` event-trigger function. The `utt_shared_privileges`
+DDL event trigger assigns shared ownership and read access for future objects;
+its caller is PostgreSQL, not an application. Role creation and event-trigger
+maintenance retain a bootstrap-superuser boundary. Other shared objects belong
+to `utt_admin`, except extension members.
+
+| Administrative entry in `utt_pkg` | Effect |
+|---|---|
+| `create_admin(login_name)` | Creates an individual administrator login; returns its name; no sandbox. |
+| `create_developer(login_name)` | Atomically creates an individual login and empty sandbox; returns both names. |
+| `create_developer_sandbox(developer_role)` | Creates/reuses an existing login's correctly owned sandbox, configuring peer reads. |
+| `deactivate_account(login_name)` | Disables new logins without deleting the sandbox or terminating sessions. |
+
+Only administrator sessions may call these provisioning entries. Credential setup
+and sandbox deletion are separate operations; see [account examples](uttdb.md#human-accounts-and-sandboxes).
+`903` implements mirror; `913-curation.sql` defines optional project tables and
+snapshot procedures. No project object is required by the core privilege hook.
 
 These queries list actual instances, including generated relations and triggers:
 

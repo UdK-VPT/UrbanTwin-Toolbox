@@ -1,106 +1,217 @@
-DO $$
-DECLARE
-  db_name name := current_database();
-  role_name name;
+-- Fresh initialization, run by the bootstrap PostgreSQL superuser.
+-- All UTT privilege policy lives here, including future-object policy.
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='utt_admin') THEN
+    CREATE ROLE utt_admin NOLOGIN;
+  END IF;
+  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname='utt_developer') THEN
+    CREATE ROLE utt_developer NOLOGIN;
+  END IF;
+  ALTER ROLE utt_admin NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+  ALTER ROLE utt_developer NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+  EXECUTE format('REVOKE ALL ON DATABASE %I FROM PUBLIC',current_database());
+  EXECUTE format('GRANT CONNECT, TEMPORARY ON DATABASE %I TO utt_admin, utt_developer',current_database());
+  EXECUTE format('GRANT CREATE ON DATABASE %I TO utt_admin',current_database());
+  EXECUTE format('GRANT utt_admin TO %I WITH ADMIN OPTION',current_user);
+END $$;
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+GRANT USAGE ON FOREIGN DATA WRAPPER ogr_fdw, postgres_fdw TO utt_admin;
+-- Trusted administrators manage source files; no SUPERUSER is granted.
+GRANT pg_read_server_files TO utt_admin;
+GRANT EXECUTE ON FUNCTION pg_catalog.pg_stat_file(text),
+  pg_catalog.pg_read_binary_file(text),
+  pg_catalog.pg_read_binary_file(text,bigint,bigint) TO utt_admin;
+GRANT SET ON PARAMETER "postgis.gdal_enabled_drivers" TO utt_admin;
+COMMENT ON ROLE utt_admin IS 'Trusted UTT administrators; shared object owner. Individual logins remain identifiable as session_user.';
+COMMENT ON ROLE utt_developer IS 'Researchers and developers: shared reads and individually owned sandboxes.';
+
+-- A single narrowly scoped DDL boundary makes ownership/defaults independent of
+-- which administrator executes DDL. It also covers the optional curation schema.
+CREATE OR REPLACE FUNCTION utt_pkg.apply_shared_privileges()
+RETURNS event_trigger LANGUAGE plpgsql SECURITY DEFINER
+SET search_path=pg_catalog AS $$
+DECLARE command record; object_owner oid; admin_oid oid := 'utt_admin'::regrole;
 BEGIN
-  FOREACH role_name IN ARRAY ARRAY[
-    'uttdb_dba',
-    'uttdb_reader',
-    'uttdb_developer',
-    'uttdb_pipeline',
-    'uttdb_app_reader',
-    'uttdb_app_writer'
-  ]::name[]
-  LOOP
-    IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = role_name) THEN
-      EXECUTE format('CREATE ROLE %I NOLOGIN', role_name);
+  FOR command IN SELECT * FROM pg_event_trigger_ddl_commands() LOOP
+    IF command.in_extension THEN CONTINUE; END IF;
+    IF command.classid='pg_foreign_server'::regclass THEN
+      SELECT srvowner INTO object_owner FROM pg_foreign_server WHERE oid=command.objid;
+      IF object_owner<>admin_oid AND pg_has_role(object_owner,admin_oid,'MEMBER') THEN
+        EXECUTE format('ALTER SERVER %s OWNER TO utt_admin',command.object_identity);
+      END IF;
+    ELSIF command.classid='pg_namespace'::regclass THEN
+      IF command.object_identity NOT IN ('mirror','curation','utt_pkg','citydb','citydb_pkg') THEN CONTINUE; END IF;
+      SELECT nspowner INTO object_owner FROM pg_namespace WHERE oid=command.objid;
+      IF object_owner<>admin_oid THEN
+        EXECUTE format('ALTER SCHEMA %s OWNER TO utt_admin',command.object_identity);
+      END IF;
+      EXECUTE format('REVOKE ALL ON SCHEMA %s FROM PUBLIC',command.object_identity);
+      EXECUTE format('GRANT USAGE ON SCHEMA %s TO utt_developer',command.object_identity);
+    ELSIF command.schema_name IN ('mirror','curation','utt_pkg','citydb','citydb_pkg')
+      OR EXISTS(SELECT FROM pg_namespace WHERE nspname=command.schema_name
+        AND nspname LIKE 'sandbox\_%' ESCAPE '\' AND nspowner=admin_oid) THEN
+      IF command.classid='pg_class'::regclass AND command.object_type IN
+        ('table','partitioned table','view','materialized view','foreign table','sequence') THEN
+        SELECT relowner INTO object_owner FROM pg_class WHERE oid=command.objid;
+        IF object_owner<>admin_oid AND NOT (command.object_type='sequence' AND EXISTS(
+          SELECT FROM pg_depend WHERE classid='pg_class'::regclass AND objid=command.objid
+          AND refclassid='pg_class'::regclass AND deptype IN ('a','i'))) THEN
+          EXECUTE format('ALTER %s %s OWNER TO utt_admin',command.object_type,command.object_identity);
+        END IF;
+        EXECUTE format('REVOKE ALL ON %s %s FROM PUBLIC',
+          CASE WHEN command.object_type='sequence' THEN 'SEQUENCE' ELSE 'TABLE' END,command.object_identity);
+        EXECUTE format('GRANT SELECT ON %s %s TO utt_developer',
+          CASE WHEN command.object_type='sequence' THEN 'SEQUENCE' ELSE 'TABLE' END,command.object_identity);
+      ELSIF command.classid='pg_proc'::regclass THEN
+        -- Provisioning and this hook retain their bootstrap owner: they are the
+        -- narrow boundaries for role creation and event-trigger administration.
+        IF command.schema_name='utt_pkg' AND EXISTS(SELECT FROM pg_proc
+          WHERE oid=command.objid AND proname IN
+            ('apply_shared_privileges','create_admin','create_developer','create_developer_sandbox','deactivate_account')) THEN
+          CONTINUE;
+        END IF;
+        SELECT proowner INTO object_owner FROM pg_proc WHERE oid=command.objid;
+        IF object_owner<>admin_oid THEN
+          EXECUTE format('ALTER ROUTINE %s OWNER TO utt_admin',command.object_identity);
+        END IF;
+        EXECUTE format('REVOKE ALL ON ROUTINE %s FROM PUBLIC, utt_developer',command.object_identity);
+        EXECUTE format('GRANT EXECUTE ON ROUTINE %s TO utt_admin',command.object_identity);
+        IF command.schema_name='mirror' AND command.objid=to_regprocedure('mirror.read_geotiff(text)') THEN
+          EXECUTE format('GRANT EXECUTE ON ROUTINE %s TO utt_developer',command.object_identity);
+        END IF;
+      ELSIF command.classid='pg_type'::regclass AND command.object_type IN ('type','domain') THEN
+        SELECT typowner INTO object_owner FROM pg_type WHERE oid=command.objid;
+        IF object_owner<>admin_oid THEN
+          EXECUTE format('ALTER %s %s OWNER TO utt_admin',command.object_type,command.object_identity);
+        END IF;
+      END IF;
     END IF;
   END LOOP;
+END $$;
+COMMENT ON FUNCTION utt_pkg.apply_shared_privileges() IS 'Internal bootstrap-owned ddl_command_end policy. Called only by the UTT event trigger; gives protected shared objects common administrative ownership, developer reads and restricted routine execution. Skips extension members and bootstrap privilege helpers. Returns event_trigger. Example firing it: CREATE TABLE mirror.example (id integer);';
+REVOKE ALL ON FUNCTION utt_pkg.apply_shared_privileges() FROM PUBLIC;
+DROP EVENT TRIGGER IF EXISTS utt_shared_privileges;
+CREATE EVENT TRIGGER utt_shared_privileges ON ddl_command_end
+WHEN TAG IN ('CREATE SCHEMA','CREATE TABLE','CREATE TABLE AS','SELECT INTO',
+ 'CREATE VIEW','CREATE MATERIALIZED VIEW','CREATE FOREIGN TABLE','CREATE SEQUENCE',
+ 'CREATE FUNCTION','CREATE PROCEDURE','CREATE TYPE','CREATE DOMAIN','CREATE SERVER',
+ 'ALTER TABLE','ALTER FOREIGN TABLE','ALTER VIEW','ALTER MATERIALIZED VIEW',
+ 'ALTER SEQUENCE','ALTER TYPE','ALTER DOMAIN')
+EXECUTE FUNCTION utt_pkg.apply_shared_privileges();
 
-  EXECUTE format('REVOKE ALL ON DATABASE %I FROM PUBLIC', db_name);
-  EXECUTE format(
-    'GRANT CONNECT, TEMPORARY ON DATABASE %I TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer',
-    db_name
-  );
-  EXECUTE format('GRANT CONNECT, TEMPORARY, CREATE ON DATABASE %I TO uttdb_dba', db_name);
-  EXECUTE format('GRANT uttdb_dba TO %I', current_user);
-  EXECUTE format('GRANT uttdb_pipeline TO %I', current_user);
-END
-$$;
+-- Upstream objects already exist before 902. Preserve their definitions and
+-- extension ownership, while transferring ordinary 3DCityDB objects explicitly.
+DO $$ DECLARE item record; schema_name text; BEGIN
+  FOREACH schema_name IN ARRAY ARRAY['mirror','utt_pkg','citydb','citydb_pkg','curation'] LOOP
+    IF to_regnamespace(schema_name) IS NULL THEN CONTINUE; END IF;
+    EXECUTE format('ALTER SCHEMA %I OWNER TO utt_admin',schema_name);
+    EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC',schema_name);
+    EXECUTE format('GRANT USAGE ON SCHEMA %I TO utt_developer',schema_name);
+    FOR item IN SELECT c.oid,c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+      WHERE n.nspname=schema_name AND c.relkind IN ('r','p','v','m','f','S')
+      AND NOT EXISTS(SELECT FROM pg_depend WHERE classid='pg_class'::regclass AND objid=c.oid AND deptype='e')
+      ORDER BY CASE WHEN c.relkind='S' THEN 1 ELSE 0 END LOOP
+      EXECUTE format('ALTER %s %s OWNER TO utt_admin',
+        CASE item.relkind WHEN 'v' THEN 'VIEW' WHEN 'm' THEN 'MATERIALIZED VIEW'
+        WHEN 'f' THEN 'FOREIGN TABLE' WHEN 'S' THEN 'SEQUENCE' ELSE 'TABLE' END,item.oid::regclass);
+    END LOOP;
+    FOR item IN SELECT p.oid,p.oid::regprocedure AS signature FROM pg_proc p
+      JOIN pg_namespace n ON n.oid=p.pronamespace WHERE n.nspname=schema_name
+      AND NOT (n.nspname='utt_pkg' AND p.proname IN ('apply_shared_privileges','create_admin','create_developer','create_developer_sandbox','deactivate_account'))
+      AND NOT EXISTS(SELECT FROM pg_depend WHERE classid='pg_proc'::regclass AND objid=p.oid AND deptype='e') LOOP
+      EXECUTE format('ALTER ROUTINE %s OWNER TO utt_admin',item.signature);
+    END LOOP;
+    EXECUTE format('REVOKE ALL ON ALL TABLES IN SCHEMA %I FROM PUBLIC',schema_name);
+    EXECUTE format('REVOKE ALL ON ALL SEQUENCES IN SCHEMA %I FROM PUBLIC',schema_name);
+    EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO utt_developer',schema_name);
+    EXECUTE format('REVOKE ALL ON ALL ROUTINES IN SCHEMA %I FROM PUBLIC, utt_developer',schema_name);
+    EXECUTE format('GRANT EXECUTE ON ALL ROUTINES IN SCHEMA %I TO utt_admin',schema_name);
+  END LOOP;
+  IF to_regprocedure('mirror.read_geotiff(text)') IS NOT NULL THEN
+    GRANT EXECUTE ON FUNCTION mirror.read_geotiff(text) TO utt_developer;
+  END IF;
+END $$;
+-- Global revoke is required: a schema-local revoke cannot undo PUBLIC's global default.
+ALTER DEFAULT PRIVILEGES FOR ROLE utt_admin REVOKE EXECUTE ON ROUTINES FROM PUBLIC;
+ALTER DEFAULT PRIVILEGES FOR ROLE utt_admin GRANT SELECT ON TABLES TO utt_developer;
 
-REVOKE CREATE ON SCHEMA public FROM PUBLIC;
-
-GRANT USAGE ON SCHEMA citydb TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT USAGE ON SCHEMA mirror TO uttdb_reader, uttdb_developer, uttdb_pipeline;
-GRANT USAGE ON SCHEMA utt_pkg TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-
-GRANT SELECT ON ALL TABLES IN SCHEMA citydb TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT SELECT ON ALL TABLES IN SCHEMA mirror TO uttdb_reader, uttdb_developer, uttdb_pipeline;
-GRANT SELECT ON ALL TABLES IN SCHEMA utt_pkg TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA citydb TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA mirror TO uttdb_reader, uttdb_developer, uttdb_pipeline;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA utt_pkg TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-
-GRANT ALL PRIVILEGES ON SCHEMA citydb, mirror, utt_pkg TO uttdb_dba;
-GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA citydb, mirror, utt_pkg TO uttdb_dba;
-GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA citydb, mirror, utt_pkg TO uttdb_dba;
-GRANT ALL PRIVILEGES ON ALL ROUTINES IN SCHEMA utt_pkg TO uttdb_dba;
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA citydb GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-ALTER DEFAULT PRIVILEGES IN SCHEMA mirror GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline;
-ALTER DEFAULT PRIVILEGES IN SCHEMA utt_pkg GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-ALTER DEFAULT PRIVILEGES IN SCHEMA citydb, mirror, utt_pkg GRANT USAGE, SELECT ON SEQUENCES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-
-ALTER DEFAULT PRIVILEGES FOR ROLE uttdb_pipeline IN SCHEMA mirror GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline;
-ALTER DEFAULT PRIVILEGES FOR ROLE uttdb_pipeline IN SCHEMA utt_pkg GRANT SELECT ON TABLES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-ALTER DEFAULT PRIVILEGES FOR ROLE uttdb_pipeline IN SCHEMA mirror, utt_pkg GRANT USAGE, SELECT ON SEQUENCES TO uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-
-CREATE OR REPLACE FUNCTION utt_pkg.create_developer_sandbox(developer_role name)
-RETURNS name
-LANGUAGE plpgsql
-SECURITY DEFINER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-  sandbox_schema name;
+CREATE OR REPLACE FUNCTION utt_pkg.create_developer_sandbox(developer_role text)
+RETURNS text LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+DECLARE sandbox_schema text; sandbox_owner text;
 BEGIN
-  IF NOT pg_has_role(session_user, 'uttdb_dba', 'member') THEN
-    RAISE EXCEPTION 'Only members of uttdb_dba can create developer sandboxes.';
+  IF NOT pg_has_role(session_user,'utt_admin','MEMBER') THEN
+    RAISE EXCEPTION 'Only utt_admin members may provision sandboxes.';
   END IF;
-
-  IF developer_role IS NULL OR developer_role::text = '' THEN
-    RAISE EXCEPTION 'Developer role name must not be empty.';
+  IF developer_role IS NULL OR developer_role !~ '^[a-z][a-z0-9_]*$'
+    OR octet_length('sandbox_'||developer_role)>63 THEN
+    RAISE EXCEPTION 'Use a lowercase ASCII login beginning with a letter; sandbox name must fit 63 bytes.';
   END IF;
-
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = developer_role::text) THEN
-    RAISE EXCEPTION 'Role % does not exist.', developer_role;
+  IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname=developer_role AND rolcanlogin AND NOT rolsuper) THEN
+    RAISE EXCEPTION 'Expected an existing individual, non-superuser login.';
   END IF;
-
-  sandbox_schema := (
-    'sandbox_' || lower(regexp_replace(developer_role::text, '[^a-zA-Z0-9_]+', '_', 'g'))
-  )::name;
-
-  EXECUTE format('GRANT uttdb_developer TO %I', developer_role);
-  EXECUTE format('CREATE SCHEMA IF NOT EXISTS %I AUTHORIZATION %I', sandbox_schema, developer_role);
-  EXECUTE format('GRANT USAGE, CREATE ON SCHEMA %I TO %I', sandbox_schema, developer_role);
-  EXECUTE format('GRANT ALL PRIVILEGES ON SCHEMA %I TO uttdb_dba', sandbox_schema);
-  EXECUTE format('COMMENT ON SCHEMA %I IS %L', sandbox_schema, 'Per-developer UTTDB sandbox schema.');
-
+  -- Admin researchers inherit sandbox ownership through utt_admin, avoiding
+  -- the circular membership that individual ownership membership would require.
+  sandbox_owner:=CASE WHEN pg_has_role(developer_role,'utt_admin','MEMBER')
+    THEN 'utt_admin' ELSE developer_role END;
+  sandbox_schema:='sandbox_'||developer_role;
+  IF EXISTS(SELECT FROM pg_namespace WHERE nspname=sandbox_schema AND nspowner<>(SELECT oid FROM pg_roles WHERE rolname=sandbox_owner)) THEN
+    RAISE EXCEPTION 'Sandbox % already belongs to another role.',sandbox_schema;
+  END IF;
+  EXECUTE format('GRANT utt_developer TO %I',developer_role);
+  IF sandbox_owner<>'utt_admin' THEN
+    EXECUTE format('GRANT %I TO utt_admin',developer_role);
+  END IF;
+  IF to_regnamespace(sandbox_schema) IS NULL THEN
+    EXECUTE format('CREATE SCHEMA %I AUTHORIZATION %I',sandbox_schema,sandbox_owner);
+  END IF;
+  EXECUTE format('REVOKE ALL ON SCHEMA %I FROM PUBLIC',sandbox_schema);
+  EXECUTE format('GRANT USAGE ON SCHEMA %I TO utt_developer',sandbox_schema);
+  EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %I TO utt_developer',sandbox_schema);
+  EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I IN SCHEMA %I GRANT SELECT ON TABLES TO utt_developer',developer_role,sandbox_schema);
+  -- Sandbox security-definer routines must never become a peer mutation path.
+  EXECUTE format('ALTER DEFAULT PRIVILEGES FOR ROLE %I REVOKE EXECUTE ON ROUTINES FROM PUBLIC',developer_role);
   RETURN sandbox_schema;
-END;
-$$;
+END $$;
+COMMENT ON FUNCTION utt_pkg.create_developer_sandbox(text) IS 'Administrator entry for an existing individual developer login. Creates an empty owned sandbox, or safely reuses its matching schema; configures peer SELECT defaults and administrative ownership membership. Returns schema name. Administrator sandboxes use inherited utt_admin ownership to avoid membership cycles. Rejects invalid names and collisions; does not reset objects. Example: SELECT utt_pkg.create_developer_sandbox(''alice'');';
 
-REVOKE ALL ON FUNCTION utt_pkg.create_developer_sandbox(name) FROM PUBLIC;
-GRANT EXECUTE ON FUNCTION utt_pkg.create_developer_sandbox(name) TO uttdb_dba;
+CREATE OR REPLACE PROCEDURE utt_pkg.create_developer(INOUT login_name text, INOUT sandbox_schema text DEFAULT NULL)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+  IF NOT pg_has_role(session_user,'utt_admin','MEMBER') THEN RAISE EXCEPTION 'Only utt_admin members may create accounts.'; END IF;
+  IF login_name IS NULL OR login_name !~ '^[a-z][a-z0-9_]*$' OR octet_length('sandbox_'||login_name)>63 THEN
+    RAISE EXCEPTION 'Invalid or overlength developer login.';
+  END IF;
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname=login_name) THEN RAISE EXCEPTION 'Account already exists.'; END IF;
+  EXECUTE format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION',login_name);
+  sandbox_schema:=utt_pkg.create_developer_sandbox(login_name);
+END $$;
+COMMENT ON PROCEDURE utt_pkg.create_developer(text,text) IS 'Administrator-only atomic account provisioning: creates a passwordless individual LOGIN, developer membership and empty owned sandbox with peer read defaults. Returns login_name and sandbox_schema. Set credentials separately with psql password command or deployment authentication. Duplicate accounts fail. Example: CALL utt_pkg.create_developer(''alice'');';
 
-COMMENT ON FUNCTION utt_pkg.create_developer_sandbox(name) IS
-  'Creates or reuses a sandbox_<role> schema owned by an existing developer login role, grants that login membership in uttdb_developer, and returns the sandbox schema name. Only a session user who is a member of uttdb_dba may call this security-definer function. Example, after creating login role alice: SELECT utt_pkg.create_developer_sandbox(''alice'');';
+CREATE OR REPLACE PROCEDURE utt_pkg.create_admin(INOUT login_name text)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+  IF NOT pg_has_role(session_user,'utt_admin','MEMBER') THEN RAISE EXCEPTION 'Only utt_admin members may create accounts.'; END IF;
+  IF login_name IS NULL OR login_name !~ '^[a-z][a-z0-9_]*$' OR octet_length(login_name)>63 THEN RAISE EXCEPTION 'Invalid administrator login.'; END IF;
+  IF EXISTS(SELECT FROM pg_roles WHERE rolname=login_name) THEN RAISE EXCEPTION 'Account already exists.'; END IF;
+  EXECUTE format('CREATE ROLE %I LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION',login_name);
+  EXECUTE format('GRANT utt_admin TO %I',login_name);
+END $$;
+COMMENT ON PROCEDURE utt_pkg.create_admin(text) IS 'Administrator-only atomic provisioning of an individual passwordless LOGIN with utt_admin membership and no sandbox. Returns login_name; credentials are configured separately. Bootstrap installation login receives utt_admin membership in 902 and provisions the first human admin. Example: CALL utt_pkg.create_admin(''bob'');';
+REVOKE ALL ON FUNCTION utt_pkg.create_developer_sandbox(text) FROM PUBLIC;
+REVOKE ALL ON PROCEDURE utt_pkg.create_developer(text,text), utt_pkg.create_admin(text) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION utt_pkg.create_developer_sandbox(text) TO utt_admin;
+GRANT EXECUTE ON PROCEDURE utt_pkg.create_developer(text,text), utt_pkg.create_admin(text) TO utt_admin;
 
-COMMENT ON ROLE uttdb_dba IS 'UTTDB administrators. Can provision logins, sandbox schemas, and database-owned objects.';
-COMMENT ON ROLE uttdb_reader IS 'UTTDB read-only access for trusted humans and diagnostics.';
-COMMENT ON ROLE uttdb_developer IS 'UTTDB developer access. Reads curated schemas and works inside assigned sandbox schemas.';
-COMMENT ON ROLE uttdb_pipeline IS 'UTTDB data pipeline role for controlled snapshot builds; mirror administration remains DBA-only.';
-COMMENT ON ROLE uttdb_app_reader IS 'UTTDB application read role for APIs and services.';
-COMMENT ON ROLE uttdb_app_writer IS 'UTTDB application mutation role. Prefer package/API functions over direct table writes.';
-
-ALTER DEFAULT PRIVILEGES IN SCHEMA utt_pkg REVOKE EXECUTE ON ROUTINES FROM PUBLIC;
+CREATE OR REPLACE PROCEDURE utt_pkg.deactivate_account(login_name text)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog AS $$
+BEGIN
+  IF NOT pg_has_role(session_user,'utt_admin','MEMBER') THEN RAISE EXCEPTION 'Only utt_admin members may deactivate accounts.'; END IF;
+  IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname=login_name AND rolcanlogin AND NOT rolsuper
+    AND (pg_has_role(oid,'utt_admin','MEMBER') OR pg_has_role(oid,'utt_developer','MEMBER'))) THEN
+    RAISE EXCEPTION 'Expected an active, non-superuser UTT login.';
+  END IF;
+  EXECUTE format('ALTER ROLE %I NOLOGIN',login_name);
+END $$;
+COMMENT ON PROCEDURE utt_pkg.deactivate_account(text) IS 'Administrator-only account deactivation: sets a non-superuser UTT login NOLOGIN, without deleting roles, sandbox objects or memberships. Existing sessions are unaffected. Returns no result. Example: CALL utt_pkg.deactivate_account(''alice'');';
+REVOKE ALL ON PROCEDURE utt_pkg.deactivate_account(text) FROM PUBLIC;
+GRANT EXECUTE ON PROCEDURE utt_pkg.deactivate_account(text) TO utt_admin;

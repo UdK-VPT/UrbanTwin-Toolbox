@@ -152,9 +152,6 @@ CREATE TRIGGER protect_registry_truncate BEFORE TRUNCATE ON mirror.registry EXEC
 CREATE TRIGGER protect_registry BEFORE INSERT OR UPDATE OR DELETE ON mirror.registry FOR EACH ROW EXECUTE FUNCTION mirror.protect_metadata();
 COMMENT ON FUNCTION mirror.protect_metadata() IS 'Integrity trigger for metadata writes by DBAs: rejects edits/deletion of accepted imports and schema definitions, and rewrites of accepted file state, comparing native row output without GeoJSON conversion of extent. Returns allowed NEW/OLD row. Example firing the trigger: UPDATE mirror.import SET data_revision_at = now() WHERE status = ''accepted''; -- rejected.';
 
-REVOKE ALL ON mirror.registry, mirror.import, mirror.source_columns FROM PUBLIC, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT SELECT ON mirror.registry, mirror.import, mirror.source_columns TO uttdb_reader, uttdb_developer, uttdb_pipeline;
-GRANT ALL ON mirror.registry, mirror.import, mirror.source_columns TO uttdb_dba;
 -- Shared extent calculation for local registration and accepted data, never a WFS scan at registration.
 CREATE OR REPLACE FUNCTION mirror.layer_extent(layer_table regclass)
 RETURNS public.geometry
@@ -194,9 +191,6 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION mirror.layer_extent(regclass)
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION mirror.layer_extent(regclass) TO uttdb_dba;
 COMMENT ON FUNCTION mirror.layer_extent(regclass) IS
   'DBA invoker-security helper for file registration and publication. Scans geometry columns and raster tile hulls, transforms known coordinates to EPSG:4326 and returns their bounding geometry without writing data. Returns NULL for empty/nonspatial relations or any nonempty geometry with unknown SRID; other transform errors propagate. Raster bounds include NoData cells. Requires SELECT on the relation. Example: SELECT mirror.layer_extent(''mirror.buildings_stored''::regclass);';
 
@@ -280,9 +274,6 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION mirror.wfs_revision_dates(text, xml)
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION mirror.wfs_revision_dates(text, xml) TO uttdb_dba;
 COMMENT ON FUNCTION mirror.wfs_revision_dates(text, xml) IS
   'DBA invoker-security metadata reader used by WFS registration and batch refresh. Fetches capabilities unless supplied, follows each distinct first MetadataURL once, and returns each layer name with its latest ISO 19139 dataset citation revision timestamp. Date-only values become midnight UTC. Missing links or unsupported metadata/date fields yield NULL; HTTP, XML and timestamp errors abort. Writes nothing. Does not interpret revision as feature validity. Example: SELECT * FROM mirror.wfs_revision_dates(''https://gdi.berlin.de/services/wfs/alkis'');';
 
@@ -324,7 +315,7 @@ BEGIN
       p_server_name, 'WFS:' || p_wfs_url, 'WFS', 'false',
       'GDAL_HTTP_TIMEOUT=300 GDAL_HTTP_CONNECTTIMEOUT=10'
     );
-    EXECUTE format('GRANT USAGE ON FOREIGN SERVER %I TO uttdb_dba', p_server_name);
+
   ELSIF NOT EXISTS (
     SELECT 1 FROM pg_foreign_server s
     JOIN pg_foreign_data_wrapper w ON w.oid = s.srvfdw
@@ -447,14 +438,9 @@ END;
 $$;
 
 -- Invoker security: the caller supplies its own schema and foreign-server privileges.
-REVOKE ALL ON FUNCTION mirror.register_wfs_source(text, text)
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline,
-       uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION mirror.register_wfs_source(text, text) TO uttdb_dba;
-GRANT USAGE ON FOREIGN DATA WRAPPER ogr_fdw TO uttdb_dba;
 
 COMMENT ON FUNCTION mirror.register_wfs_source(text, text) IS
-  'DBA helper: registers all advertised WFS layers as read-only ogr_fdw foreign tables and mirror.registry rows. Records source identity, whole-source selection, first registration and advertised geographic bounds in EPSG:4326 when available; derives _stored names. Published layer titles, abstracts and service-level fees/access constraints are preserved in their original language; absent elements remain NULL. HTTP, XML or layer-matching errors roll back registration. Last import remains NULL until feature storage. Returns foreign table names as regclass values. Registry name limits and relation collisions cause the whole call to roll back, including any newly created server. Linked ISO dataset revision dates populate source_revision_at. Repeated registration is not a refresh. Requires caller database/schema/server and registry-write privileges, normally uttdb_dba membership. Example: SELECT * FROM mirror.register_wfs_source(''berlin_alkis'', ''https://gdi.berlin.de/services/wfs/alkis'');';
+  'DBA helper: registers all advertised WFS layers as read-only ogr_fdw foreign tables and mirror.registry rows. Records source identity, whole-source selection, first registration and advertised geographic bounds in EPSG:4326 when available; derives _stored names. Published layer titles, abstracts and service-level fees/access constraints are preserved in their original language; absent elements remain NULL. HTTP, XML or layer-matching errors roll back registration. Last import remains NULL until feature storage. Returns foreign table names as regclass values. Registry name limits and relation collisions cause the whole call to roll back, including any newly created server. Linked ISO dataset revision dates populate source_revision_at. Repeated registration is not a refresh. Requires caller database/schema/server and registry-write privileges, normally utt_admin membership. Example: SELECT * FROM mirror.register_wfs_source(''berlin_alkis'', ''https://gdi.berlin.de/services/wfs/alkis'');';
 
 -- Manual example; not executed during initialization:
 -- SELECT * FROM mirror.register_wfs_source(
@@ -493,11 +479,8 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION mirror.read_geotiff(text)
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION mirror.read_geotiff(text) TO uttdb_dba;
 COMMENT ON FUNCTION mirror.read_geotiff(text) IS
-  'DBA-only security-definer file reader used by file registration and raster source views. Reads a trusted self-contained GeoTIFF below /source-files, decodes all pixels in memory and returns rid/rast tiles up to 256x256 with all bands, georeferencing and NoData retained. Writes nothing. Enables only GTiff locally; files larger than 256 MiB are rejected and decoded data must also fit memory. Requires the function owner to have server-file read permission; source files and symlinks must be administered by trusted DBAs. Example: SELECT rid, public.ST_Metadata(rast) FROM mirror.read_geotiff(''/source-files/heat.tif'');';
+  'Read-only security-definer file reader used by administrator file registration and developer-readable raster source views. Reads a trusted self-contained GeoTIFF below /source-files, decodes all pixels in memory and returns rid/rast tiles up to 256x256 with all bands, georeferencing and NoData retained. Writes nothing. Enables only GTiff locally; files larger than 256 MiB are rejected and decoded data must also fit memory. Requires the function owner to have server-file read permission; source files and symlinks must be administered by trusted DBAs. Example: SELECT rid, public.ST_Metadata(rast) FROM mirror.read_geotiff(''/source-files/heat.tif'');';
 
 -- Register vector layers through OGR, or a GeoTIFF as a lazy raster source view.
 -- GeoTIFFs use their filename as layer_name and a collision-checked naming base.
@@ -550,9 +533,7 @@ BEGIN
        SELECT rid, rast FROM mirror.read_geotiff(%L)', base_name || '_source', file_path);
     EXECUTE format('COMMENT ON VIEW mirror.%I IS %L', base_name || '_source',
       format('Raster source %I.%I; read with mirror.read_geotiff.', source_name, raster_layer));
-    EXECUTE format('REVOKE ALL ON mirror.%I FROM PUBLIC, uttdb_reader, uttdb_developer,
-      uttdb_pipeline, uttdb_app_reader, uttdb_app_writer', base_name || '_source');
-    EXECUTE format('GRANT SELECT ON mirror.%I TO uttdb_dba', base_name || '_source');
+
     -- Decode and measure now; registration persists only the extent, not pixels.
     layer_extent := mirror.layer_extent(to_regclass(format('mirror.%I', base_name || '_source')));
     INSERT INTO mirror.registry (source_name, layer_name, source_type, source_url, import_scope, table_base, extent, stable_key)
@@ -569,7 +550,7 @@ BEGIN
     server_options := server_options || format(', open_options %L', open_options);
   END IF;
   EXECUTE format('CREATE SERVER %I FOREIGN DATA WRAPPER ogr_fdw OPTIONS (%s)', source_name, server_options);
-  EXECUTE format('GRANT USAGE ON FOREIGN SERVER %I TO uttdb_dba', source_name);
+
   EXECUTE format('CREATE SCHEMA %I', discovery_schema);
   EXECUTE format(
     'IMPORT FOREIGN SCHEMA ogr_all FROM SERVER %I INTO %I
@@ -600,9 +581,6 @@ BEGIN
 END;
 $$;
 
-REVOKE ALL ON FUNCTION mirror.register_file_source(text, text, text, text)
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION mirror.register_file_source(text, text, text, text) TO uttdb_dba;
 COMMENT ON FUNCTION mirror.register_file_source(text, text, text, text) IS
   'DBA invoker-security registration: discovers all vector layers in a local dataset below /source-files using ogr_fdw, creates read-only source relations and source_type=file registry rows, and returns their regclass names. GeoTIFF (.tif/.tiff with no driver, or explicit GTiff) registers one registry-named _source view and one layer named after the filename, with stable tile key rid; every read inventories the entire self-contained raster. It validates by decoding but persists no pixels; requires a self-contained file at most 256 MiB and no open_options. Other formats use OGR vector discovery. Registration scans file geometry/raster bounds into registry.extent in EPSG:4326 (NULL for unknown SRID or empty/nonspatial data). No source rows are stored until store_layer or the batch procedure runs. GDAL detects the driver unless supplied; open_options passes driver-specific options. Published metadata is left NULL because no generic metadata extraction is implemented. Unsupported/unreadable files, empty datasets, name collisions roll back the entire registration. Files remain untouched. Example: SELECT * FROM mirror.register_file_source(''buildings'', ''/source-files/berlin/buildings.gpkg''); CSV: SELECT * FROM mirror.register_file_source(''points'', ''/source-files/points.csv'', ''CSV'', ''X_POSSIBLE_NAMES=longitude Y_POSSIBLE_NAMES=latitude'');';
 
@@ -746,10 +724,7 @@ BEGIN
       SELECT version INTO captured_revision FROM chosen;
       UPDATE mirror.import SET structure_version = captured_revision WHERE import_id = attempt;
     END IF;
-    EXECUTE format('REVOKE ALL ON mirror.%I FROM PUBLIC, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer',staging);
-    EXECUTE format('GRANT SELECT ON mirror.%I TO uttdb_reader, uttdb_developer, uttdb_pipeline',staging);
-    EXECUTE format('GRANT ALL ON mirror.%I TO uttdb_dba',staging);
-    EXECUTE format('ALTER TABLE mirror.%I OWNER TO uttdb_dba',staging);
+
   EXCEPTION WHEN OTHERS THEN
     UPDATE mirror.import SET status='failed',staging_table=NULL,validation_errors=ARRAY[SQLERRM] WHERE import_id=attempt;
     RAISE WARNING 'Import % failed: %',attempt,SQLERRM;
@@ -1007,11 +982,7 @@ BEGIN
         EXECUTE format('CREATE INDEX ON %s USING gist(public.ST_ConvexHull(%I))',history_oid::regclass,attr.column_name);
       END IF;
     END LOOP;
-    EXECUTE format('REVOKE ALL ON %s, mirror.%I FROM PUBLIC, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer',history_oid::regclass,entry.table_base);
-    EXECUTE format('GRANT SELECT ON %s, mirror.%I TO uttdb_reader, uttdb_developer, uttdb_pipeline',history_oid::regclass,entry.table_base);
-    EXECUTE format('GRANT ALL ON %s TO uttdb_dba',history_oid::regclass);
-    EXECUTE format('ALTER TABLE %s OWNER TO uttdb_dba',history_oid::regclass);
-    EXECUTE format('ALTER VIEW mirror.%I OWNER TO uttdb_dba',entry.table_base);
+
     EXECUTE format('ANALYZE %s',history_oid::regclass);
     UPDATE mirror.registry SET last_imported_at=at_time,
       extent=mirror.layer_extent(to_regclass(format('mirror.%I',entry.table_base))) WHERE row_id=entry.row_id;
@@ -1086,16 +1057,3 @@ BEGIN
 END;
 $$;
 COMMENT ON PROCEDURE mirror.update_registered_sources(boolean,text,interval) IS 'DBA top-level batch, outside BEGIN/COMMIT: refreshes active row/file registrations in stable order, committing each dataset independently. Skips pending staging and recently accepted imports; skip_interval NULL disables freshness skip. Refreshes WFS advertised revisions separately from accepted evidence. Failed source reads persist failed attempts; earlier commits survive later errors. Returns no result. Example: CALL mirror.update_registered_sources(review=>true,skip_interval=>NULL);';
-
--- Explicit privilege boundaries override the broad initialization defaults in 902.
-DO $$ DECLARE routine record; BEGIN
-  FOR routine IN SELECT p.oid::regprocedure AS signature FROM pg_proc p JOIN pg_namespace n ON n.oid=p.pronamespace
-    WHERE n.nspname='mirror'
-  LOOP
-    EXECUTE format('REVOKE ALL ON ROUTINE %s FROM PUBLIC,uttdb_reader,uttdb_developer,uttdb_pipeline,uttdb_app_reader,uttdb_app_writer',routine.signature);
-    EXECUTE format('GRANT EXECUTE ON ROUTINE %s TO uttdb_dba',routine.signature);
-  END LOOP;
-END $$;
-
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA mirror TO uttdb_dba;
-REVOKE UPDATE ON ALL SEQUENCES IN SCHEMA mirror FROM uttdb_pipeline;

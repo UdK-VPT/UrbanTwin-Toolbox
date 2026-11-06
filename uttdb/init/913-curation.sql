@@ -4,8 +4,6 @@
 -- Ordinary Berlin snapshot tables. Fresh initialization only.
 CREATE SCHEMA curation;
 COMMENT ON SCHEMA curation IS 'Project-specific snapshot recipes, output tables and current build identity.';
-GRANT USAGE ON SCHEMA curation TO uttdb_dba,uttdb_pipeline,uttdb_reader,uttdb_developer,uttdb_app_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA curation REVOKE EXECUTE ON ROUTINES FROM PUBLIC;
 
 -- address
 
@@ -318,11 +316,6 @@ CREATE TABLE curation.dataset_build (
 COMMENT ON TABLE curation.dataset_build IS 'System-maintained identity of each current complete successful dataset, replaced atomically with its tables. region NULL means the whole registered scope. No execution history; failed builds preserve this row.';
 COMMENT ON COLUMN curation.dataset_build.git_revision IS 'Caller-supplied SQL Git revision, NULL when unknown; not independently verified by PostgreSQL.';
 COMMENT ON COLUMN curation.dataset_build.mirror_snapshot IS 'Actual mirror system-time selection used for all inputs; not a temporal axis on curated rows.';
-GRANT ALL ON SCHEMA curation TO uttdb_dba;
-GRANT ALL ON ALL TABLES IN SCHEMA curation TO uttdb_dba;
-GRANT ALL ON ALL SEQUENCES IN SCHEMA curation TO uttdb_dba;
-REVOKE ALL ON ALL TABLES IN SCHEMA curation FROM PUBLIC,uttdb_pipeline,uttdb_app_writer;
-GRANT SELECT ON ALL TABLES IN SCHEMA curation TO uttdb_reader,uttdb_developer,uttdb_pipeline,uttdb_app_reader;
 
 COMMENT ON COLUMN curation.berlin_block.source_date IS 'Original source datum, an ordinary attribute without valid-time inference.';
 COMMENT ON COLUMN curation.berlin_plot.source_date IS 'Original source beg, an ordinary attribute without valid-time inference.';
@@ -725,7 +718,3 @@ BEGIN
 END;
 $$;
 COMMENT ON PROCEDURE curation.curate_berlin_20261101(timestamptz,public.geometry,text) IS 'Pipeline/DBA entry point: reconstructs six Berlin entity tables and three n:m relationship tables from one accepted mirror snapshot, then installs all results and the current dataset_build row in one caller transaction. Uses indexed temporary tables; failure preserves the previous complete dataset. No internal commits, publication interface or curated history. NULL region selects full scope; explicit regions must use source-compatible CRS. Git revision is caller-supplied and nullable. Default snapshot is pinned, never latest. Example: BEGIN; CALL curation.curate_berlin_20261101(snapshot_at=>''2026-11-01 00:00:00+00'',git_revision=>NULL); COMMIT;';
-
-REVOKE ALL ON ALL ROUTINES IN SCHEMA curation FROM PUBLIC,uttdb_reader,uttdb_developer,uttdb_pipeline,uttdb_app_reader,uttdb_app_writer;
-GRANT EXECUTE ON ALL ROUTINES IN SCHEMA curation TO uttdb_dba;
-GRANT EXECUTE ON PROCEDURE curation.curate_berlin_20261101(timestamptz,public.geometry,text) TO uttdb_pipeline;
