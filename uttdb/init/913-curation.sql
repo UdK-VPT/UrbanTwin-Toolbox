@@ -670,12 +670,12 @@ $$;
 COMMENT ON PROCEDURE curation.curate_berlin_relations_20261101() IS 'Internal chained curation step called after all entity working tables have been built by the Berlin orchestrator for one snapshot. Creates three temporary n:m relationship tables with one fraction per spatial pair; no historical combinations. Does not install or commit. Example in that build transaction: CALL curation.curate_berlin_relations_20261101();';
 
 CREATE PROCEDURE curation.curate_berlin_20261101(
-    snapshot_at timestamptz DEFAULT TIMESTAMPTZ '2026-11-01 00:00:00+00',
+    snapshot_at timestamptz DEFAULT NULL,
     region public.geometry DEFAULT NULL,git_revision text DEFAULT NULL)
 LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog SET TimeZone='UTC' AS $$
-DECLARE entity text; output_name text; columns_sql text;
+DECLARE entity text; output_name text; columns_sql text; unresolved_layers text;
 BEGIN
-    IF snapshot_at IS NULL OR NOT isfinite(snapshot_at) OR snapshot_at>clock_timestamp() THEN
+    IF snapshot_at IS NOT NULL AND (NOT isfinite(snapshot_at) OR snapshot_at>clock_timestamp()) THEN
       RAISE EXCEPTION 'Choose a finite mirror snapshot at or before build time.';
     END IF;
     IF region IS NOT NULL AND (public.ST_IsEmpty(region) OR NOT public.ST_IsValid(region)
@@ -683,6 +683,33 @@ BEGIN
     PERFORM pg_advisory_xact_lock(70303,1);
     -- Prevent source publication/schema changes during the cooperating input selection.
     LOCK TABLE mirror.registry IN EXCLUSIVE MODE;
+    SELECT string_agg(required.source_name || '/' || required.layer_name, ', '
+                      ORDER BY required.source_name,required.layer_name)
+      INTO unresolved_layers
+    FROM (VALUES
+      ('berlin_alkis','alkis:land'),
+      ('berlin_alkis','alkis:bezirk'),
+      ('berlin_alkis','alkis:flurstuecke'),
+      ('berlin_alkis_gebaeude','alkis_gebaeude:gebaeude'),
+      ('berlin_bloecke','bloecke:rbs_bloecke'),
+      ('berlin_adressen','adressen_rbs:adressen_rbs')
+    ) AS required(source_name,layer_name)
+    LEFT JOIN mirror.registry r ON r.source_name=required.source_name
+      AND r.layer_name=required.layer_name AND r.storage_mode='rows'
+      AND (snapshot_at IS NOT NULL OR NOT r.retired)
+    LEFT JOIN LATERAL (
+      SELECT i.status FROM mirror.import i WHERE i.registry_row_id=r.row_id
+        AND (snapshot_at IS NULL OR (i.status='accepted' AND i.accepted_at<=snapshot_at))
+      ORDER BY CASE WHEN snapshot_at IS NULL THEN i.import_id END DESC,
+               i.accepted_at DESC,i.import_id DESC LIMIT 1
+    ) latest ON true
+    WHERE latest.status IS DISTINCT FROM 'accepted';
+    IF unresolved_layers IS NOT NULL THEN
+      RAISE EXCEPTION 'Required Berlin sources are not ready: %',unresolved_layers
+        USING HINT='For a current build, register active row sources and resolve their latest imports in mirror.import using mirror.store_layer, mirror.accept_layer or mirror.reject_layer as appropriate. Historical builds require an accepted import at or before snapshot_at.';
+    END IF;
+    -- Resolve once after waiting for publication/build locks; explicit times stay unchanged.
+    snapshot_at:=coalesce(snapshot_at,clock_timestamp());
     CALL curation.curate_berlin_city_20261101(snapshot_at,region);
     CALL curation.curate_berlin_district_20261101(snapshot_at,region);
     CALL curation.curate_berlin_block_20261101(snapshot_at,region);
@@ -717,4 +744,4 @@ BEGIN
         region=excluded.region,completed_at=excluded.completed_at;
 END;
 $$;
-COMMENT ON PROCEDURE curation.curate_berlin_20261101(timestamptz,public.geometry,text) IS 'Pipeline/DBA entry point: reconstructs six Berlin entity tables and three n:m relationship tables from one accepted mirror snapshot, then installs all results and the current dataset_build row in one caller transaction. Uses indexed temporary tables; failure preserves the previous complete dataset. No internal commits, publication interface or curated history. NULL region selects full scope; explicit regions must use source-compatible CRS. Git revision is caller-supplied and nullable. Default snapshot is pinned, never latest. Example: BEGIN; CALL curation.curate_berlin_20261101(snapshot_at=>''2026-11-01 00:00:00+00'',git_revision=>NULL); COMMIT;';
+COMMENT ON PROCEDURE curation.curate_berlin_20261101(timestamptz,public.geometry,text) IS 'Pipeline/DBA entry point: reconstructs six Berlin entity tables and three n:m relationship tables from one accepted mirror snapshot, then installs all results and the current dataset_build row in one caller transaction. Uses indexed temporary tables; failure preserves the previous complete dataset. No internal commits, publication interface or curated history. NULL region selects full scope; explicit regions must use source-compatible CRS. Git revision is caller-supplied and nullable. Omitted or NULL snapshot_at selects one current mirror time after locking and requires active sources with accepted latest imports; explicit timestamps reconstruct accepted history independently of later import failures or retirement. Missing inputs raise exceptions with recovery hints. Standalone CALL is atomic; an explicit outer transaction controls commit when supplied. Example: CALL curation.curate_berlin_20261101(); Historical example: CALL curation.curate_berlin_20261101(snapshot_at=>''2026-11-01 00:00:00+00'');';

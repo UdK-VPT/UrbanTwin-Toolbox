@@ -250,10 +250,13 @@ use advertised revisions to infer valid time. Ordinary mapped source dates can
 change independently of advertised dataset metadata.
 
 [example/berlin.sql](../example/berlin.sql) registers sources and accepts the six
-Berlin layers, committing each mirror step independently. It then explicitly pins
-one timestamp after those acceptances and builds the complete curated dataset in
-one transaction. Run without an outer transaction; roll back a failed step and
-retry it, preserving earlier mirror commits.
+Berlin layers, committing each mirror step independently. Its final
+`CALL curation.curate_berlin_20261101();` validates the required sources internally,
+selects one current mirror time and atomically builds the complete dataset.
+No snapshot date needs to be entered. Missing, pending or unsuccessful imports stop
+the build; inspect `mirror.import` and resolve them before retrying the final step.
+Run without an outer transaction; roll back a failed step and retry it, preserving
+earlier mirror commits.
 
 ## Snapshot curation
 
@@ -275,9 +278,13 @@ SELECT * FROM curation.berlin_relation_building_plot;
 ```
 
 Choose an actual compatible snapshot after the required source acceptances.
-The fixed default is `2026-11-01 00:00:00+00`; it never advances to latest data.
-New imports require an explicit override. A NULL region selects the whole registered
-scope; a supplied geometry must use the source CRS, without automatic conversion.
+Omit `snapshot_at` (or pass NULL) to build current data: the procedure acquires its
+locks, checks that all six active sources have accepted latest imports, and selects
+one timestamp for the complete build. Explicit timestamps reconstruct accepted
+history even when later imports failed, are pending, or the source was retired.
+A standalone `CALL` needs no transaction wrapper; within an explicit transaction,
+the caller controls commit. The procedure never commits internally.
+A NULL region selects the whole registered scope; a supplied geometry must use the source CRS, without automatic conversion.
 Intersecting geometries are retained whole, including those crossing the boundary.
 Missing required accepted inputs or recipe columns fail the build clearly.
 

@@ -98,10 +98,10 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   and mirror sources. Do not implement extra project schemas, multi-project management
   or a named-schema initializer until requested.
 - For rebuildable curation, give each
-  functional recipe version a fixed default mirror snapshot `timestamptz`, with an
-  explicit caller override for testing or later compatible data. Do not silently use
-  now/latest or advance the default. Record the actual snapshot used with recipe/Git
-  revision, region/parameters and build outcome; distinguish snapshot time from build
+  functional recipe version an explicit mirror snapshot `timestamptz` parameter.
+  The public Berlin procedure resolves omitted/NULL input to one current timestamp
+  after locking and validates source readiness internally; explicit times select history.
+  Record the actual snapshot used with recipe/Git revision, region/parameters and build outcome; distinguish snapshot time from build
   time. Curated outputs are replaceable, without independent record history; optimize
   full snapshot/region reconstruction before adding incremental processing or caches.
   Implement curation routines as database SQL procedures (`CREATE PROCEDURE`, called
@@ -396,10 +396,11 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   ID conversions; snapshot-local `row_id` values may change on reconstruction.
 - Read mirror versions at one requested timestamp and validate required columns
   against the accepted schema at that timestamp, not retained physical columns or
-  today's view. Require accepted inputs; do not silently use latest or skip missing
+  today's view. Require accepted inputs; never replace explicit snapshots or skip missing
   recipe columns. Preserve source dates and nullable descriptive values. Do not infer
   matching identifiers, unit conversion or CRS conversion.
-- Recipes have fixed default `timestamptz` snapshots and explicit overrides. Use a
+- The public Berlin recipe resolves omitted/NULL snapshots once after locking;
+  explicit `timestamptz` snapshots preserve historical reconstruction. Use a
   new functional recipe version for intended feature/semantic changes; fixes,
   maintenance and performance improvements may update an existing version. Preserve
   older functional recipes when introducing later versions; Git records exact SQL.

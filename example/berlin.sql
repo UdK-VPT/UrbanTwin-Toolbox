@@ -30,12 +30,6 @@ BEGIN;
   );
 COMMIT;
 
-BEGIN;
-  SELECT * FROM mirror.register_wfs_source(
-    'berlin_baumbestand', 'https://gdi.berlin.de/services/wfs/baumbestand'
-  );
-COMMIT;
-
 -- Example of a file registration, file must be loaded into folder ./uttdb/source-files first
 -- BEGIN;
 --   -- Keep this file in source-files before running the setup.
@@ -84,14 +78,5 @@ BEGIN;
   SELECT mirror.store_layer('berlin_adressen', 'adressen_rbs:adressen_rbs');
 COMMIT;
 
--- Pin one snapshot after all six required source acceptances; pass it through the
--- complete recipe. Failed builds preserve the previous complete curated dataset.
--- This explicit override is necessary for fresh imports newer than the recipe default.
-BEGIN;
-DO $$
-DECLARE selected_snapshot timestamptz := clock_timestamp();
-BEGIN
-  CALL curation.curate_berlin_20261101(snapshot_at=>selected_snapshot);
-END;
-$$;
-COMMIT;
+-- Build the current dataset; the database validates inputs and selects one mirror time.
+CALL curation.curate_berlin_20261101();

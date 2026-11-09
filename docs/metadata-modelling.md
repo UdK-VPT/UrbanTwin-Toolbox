@@ -136,8 +136,9 @@ Advertised revisions do not date real-world changes or change snapshot selection
 ## Snapshot curation and build identity
 
 The Berlin SQL procedures select accepted mirror records at one `timestamptz`,
-optionally restricted to an intersecting region. Each functional recipe has a fixed
-snapshot default and an explicit override. Required columns are checked against the
+optionally restricted to an intersecting region. The public Berlin procedure
+selects one current timestamp when omitted, or preserves an explicit timestamp
+for historical reconstruction. Required columns are checked against the
 accepted schema at that timestamp, not merely against retained physical columns or
 the latest current view. Historical NULL values remain NULL; source dates retain
 their original meaning. Incompatible CRS, identifiers or types are not silently

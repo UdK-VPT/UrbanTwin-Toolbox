@@ -40,8 +40,8 @@ and its `dataset_build` identity. Pipeline users call the restricted build proce
 developers work in sandbox schemas.
 
 Only mirror maintains source system-time history. A recipe selects one timestamp
-and optional region; curated outputs have no record-version history. The recipe's
-fixed snapshot default can be overridden explicitly. Reconstruction replaces the
+and optional region; curated outputs have no record-version history. The Berlin entry point
+automatically selects one current timestamp or accepts an explicit historical time. Reconstruction replaces the
 current dataset; failure preserves the prior complete result. The recipe holds an
 exclusive lock on `mirror.registry` while reading inputs, blocking source publication
 and schema changes while allowing ordinary metadata reads. Publication interfaces
