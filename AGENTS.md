@@ -179,31 +179,73 @@ PostgreSQL so the team can understand, discuss and maintain them together.
 
 ## Documentation rules
 
-- Keep five concise guides: `docs/welcome.md`, `docs/uttdb.md`,
-  `docs/metadata-modelling.md`, `docs/pgadmin.md` and `docs/architecture.md`.
-  `welcome.md` links the guides, `docs/glossary.md` and the workflow/object inventory
-  in `docs/database-reference.md`; the root README contains the Compose quick start.
-- Use standard Markdown, relative links and Mermaid for architecture diagrams.
-- Document current implementation. Keep roadmaps and speculative functionality out
-  of the implementation guides.
-- Keep deferred low-priority fixes, small features and behavior proposals in root
-  [BACKLOG.md](BACKLOG.md). Entries are not implementation authorization or overrides
-  of these rules. Keep entries concise; remove resolved items and update the relevant
-  current documentation and lasting rules when the work is completed.
-- Prefer readable structures and a few practical SQL examples. Keep detailed
-  interfaces in SQL comments instead of duplicating them throughout the guides.
-- Describe temporal history using system time consistently. Distinguish ordinary
-  source-date attributes from the system-time axis; do not describe this model as
-  bitemporal.
-- Keep design decisions as actionable rules here. Keep `docs/metadata-modelling.md`
-  human-facing: explain the current model, responsibilities and examples without
-  duplicating agent instructions.
+- Keep the manual in four places: root `README.md`, `docs/user-guide.md`,
+  `docs/api-reference.md` and `docs/architecture.md`. Organize them around why UTT
+  exists, how to use it and how it works. Do not restore separate overview, glossary,
+  metadata-model, object-inventory or pgAdmin guides. Integrate necessary material
+  into the appropriate manual instead of fragmenting the documentation.
+- The README introduces UTT's purpose, research motivation, architectural philosophy,
+  current capabilities and limitations, followed by a short Compose quick start and
+  links to the three principal documents. Explain the self-owned, coherent database
+  foundation and its use of PostgreSQL, PostGIS and 3DCityDB without promotional claims.
+- Write the User Guide as a continuous workflow that can be followed from installation
+  and configuration through connection (including pgAdmin), accounts, registration,
+  stable keys, ingestion, inspection, acceptance/rejection, current/history queries,
+  updates, files, optional project curation and administration. Introduce each operation
+  when needed: explain its purpose and prerequisites, show a realistic public-API SQL
+  example, describe outcomes, common errors and the next step. Keep internal locking
+  and orchestration out of user instructions when the public API handles them.
+- Keep the API Reference systematic and complete for every UTT-owned public function
+  and procedure in `mirror`, `utt_pkg` and optional `curation`, grouped by schema/workflow
+  with an alphabetical routine index. Verify exact signatures, parameter names/types/
+  modes/defaults, results, preconditions, effects, transaction behavior, caller privileges,
+  validation, limitations and examples against implementation and grants. Distinguish
+  value-returning functions, void functions, CALL procedures and internal transaction
+  control. Inventory internal helpers/triggers separately with their actual callers,
+  parameters and significant effects; do not present them as public workflow interfaces.
+  Exclude upstream PostgreSQL, PostGIS and 3DCityDB APIs.
+- Keep Architecture human-facing and contributor-oriented: explain components and
+  data flow, schema boundaries, adapters/staging/storage/views, identities and structure
+  versions, acceptance and system-time history, native-file references, privileges and
+  sandboxes, snapshot curation, spatial relationships, persistence and deliberate
+  limitations. Preserve important design reasons. Keep actionable agent rules here
+  rather than duplicating them as user documentation or development chronology.
+- Make each document self-contained for its intended reader. Use cross-references for
+  optional detail, not to complete a paragraph or workflow. Brief explanations may
+  recur where they serve distinct purposes; avoid repeating long technical accounts.
+  Explain unfamiliar terms only where needed in context, not because they once appeared
+  in a glossary. Prefer flowing explanations, familiar conventions and concise prose;
+  use tables/lists where they improve clarity without replacing the narrative.
+- Use standard Markdown, relative links, simple contents lists and Mermaid where useful.
+  Do not introduce a documentation framework, generator or dependency. Commands run
+  from the repository root unless stated otherwise.
+- Treat current repository implementation as the source of truth. Check Compose/image/
+  initialization, SQL bodies and comments, grants, examples and relevant tests rather
+  than copying old claims. Distinguish implemented/tested behavior, testing limitations,
+  project-specific demonstrations and unsupported capabilities. Keep roadmaps and
+  speculative functionality out of implementation guides. Report discrepancies without
+  changing executable behavior as part of a documentation-only task.
+- Describe temporal history using system time consistently; source dates are ordinary
+  attributes, not a second temporal axis. Explain optional Berlin curation as replaceable
+  snapshots with an internally resolved current default or explicit historical timestamp,
+  not generic mapping or record-level lineage. Describe derived sources and CityGML
+  interfaces without asserting automated integrations that do not exist.
 - Document object maintenance responsibilities and allowed human edits, distinguishing
   mixed configuration tables from system-maintained history. Identify administrative
   entry points, read-only interfaces and internal helpers/triggers, with their actual
   callers, roles and transaction requirements. Intended future frontend use does not
   itself authorize access, new wrappers or privilege changes.
-- Documentation commands run from the repository root unless stated otherwise.
+- When consolidating, preserve useful technical content, remove superseded files and
+  update repository links. Verify public signatures/defaults/results, SQL examples,
+  relative paths/anchors, terminology and sequential readability; review for lost
+  content and unnecessary duplication. Static inspection and lightweight checks suffice
+  for documentation-only changes; do not repeat full Berlin ingestion or expensive
+  integration tests solely to validate prose. Keep detailed routine comments accurate
+  alongside the reference rather than copying interfaces throughout all guides.
+- Keep deferred low-priority fixes, small features and behavior proposals in root
+  [BACKLOG.md](BACKLOG.md). Entries are not implementation authorization or overrides
+  of these rules. Keep entries concise; remove resolved items and update the relevant
+  current documentation and lasting rules when the work is completed.
 
 ## Database rules
 
@@ -234,7 +276,8 @@ PostgreSQL so the team can understand, discuss and maintain them together.
 - Curated writes require explicit snapshot-build procedures. Preserve narrow write
   privileges until a replacement boundary is designed.
 - Keep changes small and independently usable. Document practical calls in
-  [docs/uttdb.md](docs/uttdb.md) and routine comments.
+  [docs/user-guide.md](docs/user-guide.md), complete interface contracts in
+  [docs/api-reference.md](docs/api-reference.md), and routine comments.
 - Use rollback-only database checks where practical. Distinguish repository changes
   from changes applied to a running database. Do not add migration files or plan live-data
   conversion unless explicitly requested by the user.
