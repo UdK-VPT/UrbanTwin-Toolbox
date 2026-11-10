@@ -1,729 +1,747 @@
--- Curation starts from accepted local mirror data, never from a live WFS query.
--- ALKIS land has no feature validity date; use its source-reported revision.
-CREATE FUNCTION utt_pkg.curate_city()
-RETURNS integer
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-  source_city record;
-  current_city utt.city%ROWTYPE;
-  validity_start timestamptz;
-  recorded_at timestamptz;
-  content_changed boolean;
+-- Example project: Berlin snapshot tables and SQL curation procedures.
+-- Fresh initialization only; mirror is independently usable without this file.
+
+-- Ordinary Berlin snapshot tables. Fresh initialization only.
+CREATE SCHEMA curation;
+COMMENT ON SCHEMA curation IS 'Project-specific snapshot recipes, output tables and current build identity.';
+
+-- address
+
+CREATE TABLE curation.berlin_address (
+    row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    address_id_official bigint NOT NULL,
+    geom public.geometry,
+    plot_id_official bigint,
+    street_name character varying,
+    street_id character varying,
+    house_number integer,
+    house_number_suffix character varying,
+    pca_id bigint,
+    block_id_official bigint,
+    district_id_official bigint,
+    district_name character varying,
+    place_id character varying,
+    place_name character varying,
+    planning_area_no bigint,
+    planning_area_name character varying,
+    address_date timestamp without time zone,
+    type character varying,
+    building_id_official character varying,
+    CONSTRAINT berlin_address_official_identity UNIQUE (address_id_official)
+);
+
+COMMENT ON COLUMN curation.berlin_address.row_id IS 'Snapshot-local identifier of this address row.';
+
+
+COMMENT ON COLUMN curation.berlin_address.address_id_official IS 'Official external logical object identifier (adr_ident); unique within this curated snapshot.';
+
+COMMENT ON COLUMN curation.berlin_address.geom IS 'Punkt im Koordinatensystem; Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.plot_id_official IS 'Official plot identifier (FSKO); logical reference to curation.berlin_plot.plot_id_official. Not currently populated by curation.';
+
+COMMENT ON COLUMN curation.berlin_address.street_name IS 'Straßenname (strnam); Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.street_id IS 'Straßennummer (strnr); Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.house_number IS 'Hausnummer (hausnr); Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.house_number_suffix IS 'Hausnummer-Zusatz (hausnrz); Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.pca_id IS 'Postleitzahl (postleit); Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.block_id_official IS 'Official block identifier (blknr in the block source); populated from RBS blk by curation.curate_berlin_address_20261101().';
+
+COMMENT ON COLUMN curation.berlin_address.district_id_official IS 'Official district identifier; derived as 11000000 + source bez by curation.curate_berlin_address_20261101().';
+
+COMMENT ON COLUMN curation.berlin_address.district_name IS 'Bezirk (bez_name); Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.place_id IS 'Ortsteilschlüssel (ot); Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.place_name IS 'Ortsteil (ot_name); Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.planning_area_no IS 'Planungsraum-Schlüssel (plr); Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.planning_area_name IS 'Planungsraum (plr_name); Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.address_date IS 'Aufnahmedatum der Adresse (aufn_dt); Datenquelle: Adressen Regionales Bezugssystem (RBS).';
+
+COMMENT ON COLUMN curation.berlin_address.type IS 'Straßentyp (str_typ); distinguishes RBS streets, places and other object types.';
+
+COMMENT ON COLUMN curation.berlin_address.building_id_official IS 'Official external building identifier (ALKIS uuid); logical reference to curation.berlin_building.building_id_official. Not currently populated by curation.';
+
+CREATE INDEX berlin_address_geom_idx ON curation.berlin_address USING gist (geom);
+
+-- block
+
+CREATE TABLE curation.berlin_block (
+    row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    block_id_official bigint NOT NULL,
+    geom public.geometry,
+    planning_area_no bigint,
+    mostly_district_id_official bigint,
+    centroid public.geometry,
+    source_date timestamp without time zone,
+    CONSTRAINT berlin_block_official_identity UNIQUE (block_id_official)
+);
+
+COMMENT ON COLUMN curation.berlin_block.row_id IS 'Snapshot-local identifier of this block row.';
+
+
+COMMENT ON COLUMN curation.berlin_block.block_id_official IS 'Official external logical object identifier (blknr); unique within this curated snapshot.';
+
+COMMENT ON COLUMN curation.berlin_block.geom IS 'Polygon des Umrings';
+
+COMMENT ON COLUMN curation.berlin_block.centroid IS 'Derived representative point: geometric centroid when covered by geom, otherwise ST_PointOnSurface so the point lies within the block.';
+
+COMMENT ON COLUMN curation.berlin_block.planning_area_no IS 'Planungsraum plr; populated from source plr by curation.curate_berlin_block_20261101().';
+
+COMMENT ON COLUMN curation.berlin_block.mostly_district_id_official IS 'hauptsächlich in Bezirk';
+
+CREATE INDEX berlin_block_geom_idx ON curation.berlin_block USING gist (geom);
+CREATE INDEX berlin_block_centroid_idx ON curation.berlin_block USING gist (centroid);
+
+-- building
+
+CREATE TABLE curation.berlin_building (
+    row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    source_fid bigint,
+    building_id_official character varying NOT NULL,
+    geom public.geometry,
+    building_function integer,
+    building_function_description character varying,
+    position_relative_to_ground integer,
+    position_relative_to_ground_description character varying,
+    storeys_above_ground integer,
+    storeys_below_ground integer,
+    highrise boolean,
+    building_component_type integer,
+    building_component_type_description character varying,
+    name character varying,
+    building_configuration integer,
+    building_configuration_description character varying,
+    building_condition integer,
+    building_condition_description character varying,
+    street_code character varying,
+    street_name character varying,
+    house_number character varying,
+    pseudo_house_number character varying,
+    building_association_number character varying,
+    aaa_description character varying,
+    heritage_id character varying,
+    heritage_type character varying,
+    building_height numeric,
+    roof_type character varying,
+    roof_description character varying,
+    heated boolean,
+    usage_type text,
+    building_type text,
+    CONSTRAINT berlin_building_official_identity UNIQUE (building_id_official)
+);
+
+COMMENT ON COLUMN curation.berlin_building.row_id IS 'Snapshot-local identifier of this building row.';
+
+
+COMMENT ON COLUMN curation.berlin_building.source_fid IS 'Technical source key (fid); retained as source metadata, not used for internal logical building references.';
+
+COMMENT ON COLUMN curation.berlin_building.building_id_official IS 'Official external logical object identifier (ALKIS uuid); unique within this curated snapshot.';
+
+COMMENT ON COLUMN curation.berlin_building.geom IS 'Polygon des Umrings';
+
+COMMENT ON COLUMN curation.berlin_building.building_function IS 'Gebäudefunktion GFK, Schlüssel';
+
+COMMENT ON COLUMN curation.berlin_building.building_function_description IS 'Gebäudefunktion GFK, Bezeichnung';
+
+COMMENT ON COLUMN curation.berlin_building.position_relative_to_ground IS 'Lage zur Erdoberfläche, Schlüssel';
+
+COMMENT ON COLUMN curation.berlin_building.position_relative_to_ground_description IS 'Lage zur Erdoberfläche, Name';
+
+COMMENT ON COLUMN curation.berlin_building.storeys_above_ground IS 'Anzahl der Obergeschosse AOG';
+
+COMMENT ON COLUMN curation.berlin_building.storeys_below_ground IS 'Anzahl der Untergeschosse AUG';
+
+COMMENT ON COLUMN curation.berlin_building.highrise IS 'Hochhaus HOH';
+
+COMMENT ON COLUMN curation.berlin_building.building_component_type IS 'Bauart BAT, Schlüssel';
+
+COMMENT ON COLUMN curation.berlin_building.building_component_type_description IS 'Bauart BAT, Bezeichnung';
+
+COMMENT ON COLUMN curation.berlin_building.name IS 'Gebäudename';
+
+COMMENT ON COLUMN curation.berlin_building.building_configuration IS 'Bauweise BAW, Schlüssel';
+
+COMMENT ON COLUMN curation.berlin_building.building_configuration_description IS 'Bauweise BAW, Bezeichnung';
+
+COMMENT ON COLUMN curation.berlin_building.building_condition IS 'Zustand ZUS, Schlüssel';
+
+COMMENT ON COLUMN curation.berlin_building.building_condition_description IS 'Zustand ZUS, Bezeichnung';
+
+COMMENT ON COLUMN curation.berlin_building.street_code IS 'Straßenschlüssel LAG';
+
+COMMENT ON COLUMN curation.berlin_building.street_name IS 'Straßenname NAMLAG';
+
+COMMENT ON COLUMN curation.berlin_building.house_number IS 'Hausnummer HNR';
+
+COMMENT ON COLUMN curation.berlin_building.pseudo_house_number IS 'Pseudo-Hausnummer PNR';
+
+COMMENT ON COLUMN curation.berlin_building.building_association_number IS 'Laufende Nummer LNR, nicht eindeutig';
+
+COMMENT ON COLUMN curation.berlin_building.aaa_description IS 'AAA-Beschreibung, AFIS–ALKIS–ATKIS';
+
+COMMENT ON COLUMN curation.berlin_building.heritage_id IS 'ID in Denkmalliste';
+
+COMMENT ON COLUMN curation.berlin_building.heritage_type IS 'Art des Denkmals';
+
+COMMENT ON COLUMN curation.berlin_building.building_height IS 'Gebäudehöhe';
+
+COMMENT ON COLUMN curation.berlin_building.roof_type IS 'Dachart';
+
+COMMENT ON COLUMN curation.berlin_building.roof_description IS 'Dachartbeschreibung';
+
+COMMENT ON COLUMN curation.berlin_building.heated IS 'Assumption whether a building is heated. Not currently populated by curation.';
+
+COMMENT ON COLUMN curation.berlin_building.usage_type IS 'Residential (WG) or non-residential (NWG) building use. Not currently populated by curation.';
+
+COMMENT ON COLUMN curation.berlin_building.building_type IS 'Detaillierter Gebäudetyp für projektspezifische Anwendungen';
+
+CREATE INDEX berlin_building_geom_idx ON curation.berlin_building USING gist (geom);
+
+-- The unique official-identity constraint already supplies the building ID index.
+
+-- city
+
+CREATE TABLE curation.berlin_city (
+    row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    city_id_official bigint NOT NULL,
+    name character varying,
+    geom public.geometry,
+    CONSTRAINT berlin_city_official_identity UNIQUE (city_id_official)
+);
+
+COMMENT ON COLUMN curation.berlin_city.row_id IS 'Snapshot-local identifier of this city row.';
+
+
+COMMENT ON COLUMN curation.berlin_city.city_id_official IS 'Official external logical object identifier (lan); unique within this curated snapshot.';
+
+COMMENT ON COLUMN curation.berlin_city.name IS 'Name der Stadt';
+
+COMMENT ON COLUMN curation.berlin_city.geom IS 'Polygon des Umrings';
+
+CREATE INDEX berlin_city_geom_idx ON curation.berlin_city USING gist (geom);
+
+-- district
+
+CREATE TABLE curation.berlin_district (
+    row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    district_id_official bigint NOT NULL,
+    name character varying,
+    geom public.geometry,
+    CONSTRAINT berlin_district_official_identity UNIQUE (district_id_official)
+);
+
+COMMENT ON COLUMN curation.berlin_district.row_id IS 'Snapshot-local identifier of this district row.';
+
+
+COMMENT ON COLUMN curation.berlin_district.district_id_official IS 'Official external logical object identifier (district identifier); unique within this curated snapshot.';
+
+COMMENT ON COLUMN curation.berlin_district.name IS 'Name des Bezirks';
+
+COMMENT ON COLUMN curation.berlin_district.geom IS 'Polygon des Umrings';
+
+CREATE INDEX berlin_district_geom_idx ON curation.berlin_district USING gist (geom);
+
+-- plot
+
+CREATE TABLE curation.berlin_plot (
+    row_id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    plot_id_official bigint NOT NULL,
+    geom public.geometry,
+    parcel_number_numerator bigint,
+    cadastral_district_code bigint,
+    cadastral_field_number bigint,
+    source_date timestamp without time zone,
+    district_id_official bigint,
+    CONSTRAINT berlin_plot_official_identity UNIQUE (plot_id_official)
+);
+
+COMMENT ON COLUMN curation.berlin_plot.row_id IS 'Snapshot-local identifier of this plot row.';
+
+
+COMMENT ON COLUMN curation.berlin_plot.plot_id_official IS 'Official external logical object identifier (FSKO); unique within this curated snapshot.';
+
+COMMENT ON COLUMN curation.berlin_plot.geom IS 'Polygon des Umrings';
+
+COMMENT ON COLUMN curation.berlin_plot.parcel_number_numerator IS 'Flurstückskennzeichen (Zähler) ZAE';
+
+COMMENT ON COLUMN curation.berlin_plot.cadastral_district_code IS 'Gemarkungsschlüssel GMK';
+
+COMMENT ON COLUMN curation.berlin_plot.cadastral_field_number IS 'Flurnummer FLN';
+
+COMMENT ON COLUMN curation.berlin_plot.district_id_official IS 'Official district identifier; populated from source gdz by curation.curate_berlin_plot_20261101().';
+
+CREATE INDEX berlin_plot_geom_idx ON curation.berlin_plot USING gist (geom);
+
+
+CREATE TABLE curation.berlin_relation_building_block (
+    building_row_id bigint NOT NULL REFERENCES curation.berlin_building(row_id),
+    block_row_id bigint NOT NULL REFERENCES curation.berlin_block(row_id),
+    relative_intersection numeric NOT NULL CHECK (relative_intersection > 0.02 AND relative_intersection <= 1),
+    PRIMARY KEY (building_row_id,block_row_id)
+);
+COMMENT ON TABLE curation.berlin_relation_building_block IS 'Snapshot n:m building/block matches; intersection area divided by building area, rounded to three decimals and retained above 0.02.';
+
+CREATE TABLE curation.berlin_relation_building_plot (
+    building_row_id bigint NOT NULL REFERENCES curation.berlin_building(row_id),
+    plot_row_id bigint NOT NULL REFERENCES curation.berlin_plot(row_id),
+    relative_intersection numeric NOT NULL CHECK (relative_intersection > 0.02 AND relative_intersection <= 1),
+    PRIMARY KEY (building_row_id,plot_row_id)
+);
+COMMENT ON TABLE curation.berlin_relation_building_plot IS 'Snapshot n:m building/plot matches; intersection area divided by building area, rounded to three decimals and retained above 0.02.';
+
+CREATE TABLE curation.berlin_relation_plot_block (
+    plot_row_id bigint NOT NULL REFERENCES curation.berlin_plot(row_id),
+    block_row_id bigint NOT NULL REFERENCES curation.berlin_block(row_id),
+    relative_intersection numeric NOT NULL CHECK (relative_intersection > 0.02 AND relative_intersection <= 1),
+    PRIMARY KEY (plot_row_id,block_row_id)
+);
+COMMENT ON TABLE curation.berlin_relation_plot_block IS 'Snapshot n:m plot/block matches; intersection area divided by plot area, rounded to three decimals and retained above 0.02.';
+
+CREATE TABLE curation.dataset_build (
+    dataset_name text PRIMARY KEY CHECK (btrim(dataset_name) <> ''),
+    recipe_name text NOT NULL,
+    git_revision text,
+    mirror_snapshot timestamptz NOT NULL CHECK (isfinite(mirror_snapshot)),
+    region public.geometry,
+    completed_at timestamptz NOT NULL
+);
+COMMENT ON TABLE curation.dataset_build IS 'System-maintained identity of each current complete successful dataset, replaced atomically with its tables. region NULL means the whole registered scope. No execution history; failed builds preserve this row.';
+COMMENT ON COLUMN curation.dataset_build.git_revision IS 'Caller-supplied SQL Git revision, NULL when unknown; not independently verified by PostgreSQL.';
+COMMENT ON COLUMN curation.dataset_build.mirror_snapshot IS 'Actual mirror system-time selection used for all inputs; not a temporal axis on curated rows.';
+
+COMMENT ON COLUMN curation.berlin_block.source_date IS 'Original source datum, an ordinary attribute without valid-time inference.';
+COMMENT ON COLUMN curation.berlin_plot.source_date IS 'Original source beg, an ordinary attribute without valid-time inference.';
+
+-- Snapshot recipe procedures
+
+-- One functional Berlin recipe; no generic mapping or record-history framework.
+-- Helpers have no execution grants outside the owner/DBA boundary.
+CREATE FUNCTION curation.curation_berlin_source(source_name text,layer_name text,
+    snapshot_at timestamptz,required_columns text[]) RETURNS regclass
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+DECLARE registration mirror.registry%ROWTYPE; structure bigint;
 BEGIN
-  -- Do not accept a caller-supplied date: temporal metadata must be source-backed.
-  SELECT r.source_revision_at INTO STRICT validity_start
-  FROM mirror.registry r
-  WHERE r.source_name = 'berlin_alkis' AND r.layer_name = 'alkis:land'
-    AND r.last_imported_at IS NOT NULL
-  FOR SHARE;
-  IF validity_start IS NULL OR NOT isfinite(validity_start) THEN
-    RAISE EXCEPTION 'The stored berlin_alkis.alkis:land layer has no finite source revision date.';
-  END IF;
-  -- Serialize competing city writes; the SELECT below reads one source snapshot.
-  LOCK TABLE utt.city IN SHARE ROW EXCLUSIVE MODE;
-
-  -- Berlin is both a city and a federal state; lan is its official state code.
-  SELECT lan::bigint AS id, namlan AS name, geom
-    INTO STRICT source_city FROM mirror."alkis:land_stored";
-
-  SELECT * INTO current_city FROM utt.city
-  WHERE city_id_official = source_city.id AND upper_inf(utt_txn);
-  IF FOUND THEN
-    IF current_city.source_valid IS NULL THEN
-      RAISE EXCEPTION 'Current city % has no source-valid range.', source_city.id;
+    SELECT r.* INTO STRICT registration FROM mirror.registry r
+      WHERE r.source_name=curation_berlin_source.source_name
+        AND r.layer_name=curation_berlin_source.layer_name AND r.storage_mode='rows';
+    SELECT i.structure_version INTO structure FROM mirror.import i
+      WHERE i.registry_row_id=registration.row_id AND i.status='accepted'
+        AND i.accepted_at<=snapshot_at ORDER BY i.accepted_at DESC,i.import_id DESC LIMIT 1;
+    IF structure IS NULL THEN
+      RAISE EXCEPTION 'No accepted snapshot for %.% at %',source_name,layer_name,snapshot_at;
     END IF;
-
-    content_changed := current_city.name IS DISTINCT FROM source_city.name
-      OR public.ST_AsEWKB(current_city.geom) IS DISTINCT FROM public.ST_AsEWKB(source_city.geom);
-    IF NOT content_changed THEN
-      -- A new advertised revision alone does not create a UTT version.
-      RETURN 0;
+    IF EXISTS(SELECT FROM unnest(required_columns) c WHERE NOT EXISTS(
+      SELECT FROM mirror.source_columns sc WHERE sc.registry_row_id=registration.row_id
+        AND sc.structure_version=structure AND sc.column_name=c)) THEN
+      RAISE EXCEPTION 'Required recipe columns absent from %.% at %',source_name,layer_name,snapshot_at;
     END IF;
-
-    IF validity_start < lower(current_city.source_valid) THEN
-      RAISE EXCEPTION 'Changed city data has source revision %, before current revision %.',
-        validity_start, lower(current_city.source_valid);
-    END IF;
-
-    recorded_at := clock_timestamp();
-    UPDATE utt.city
-    SET source_valid = CASE WHEN validity_start > lower(source_valid)
-          THEN tstzrange(lower(source_valid), validity_start, '[)')
-          ELSE source_valid END,
-        utt_txn = tstzrange(lower(utt_txn), recorded_at, '[)')
-    WHERE row_id = current_city.row_id;
-  ELSE
-    recorded_at := clock_timestamp();
-  END IF;
-
-  INSERT INTO utt.city (city_id_official, name, geom, source_valid, utt_txn)
-  VALUES (source_city.id, source_city.name, source_city.geom,
-          tstzrange(validity_start, NULL, '[)'),
-          tstzrange(recorded_at, NULL, '[)'));
-  RETURN 1;
+    RETURN to_regclass(format('mirror.%I',registration.stored_table));
 END;
 $$;
+COMMENT ON FUNCTION curation.curation_berlin_source(text,text,timestamptz,text[]) IS 'Internal helper called by Berlin entity procedures. Checks accepted schema at the requested snapshot, including removed columns, and returns the stored source relation; writes nothing. Example: SELECT curation.curation_berlin_source(''berlin_alkis'',''alkis:land'',''2026-11-01 UTC'',ARRAY[''lan'',''namlan'',''geom'']);';
 
-REVOKE ALL ON FUNCTION utt_pkg.curate_city()
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.curate_city() TO uttdb_dba, uttdb_pipeline;
-COMMENT ON FUNCTION utt_pkg.curate_city() IS
-  'DBA/pipeline invoker-security curation of Berlin from mirror."alkis:land_stored" into utt.city: lan becomes the stable city_id_official, namlan becomes name, geometry retains its source CRS, and each version receives an internal row_id. Requires exactly one source row and a successfully imported registry entry with a finite source_revision_at. No temporal input is accepted from the caller. The first import opens source_valid at the source revision and utt_txn at insertion. Name or geometry changes close the current utt_txn and insert a new version; a newer revision also closes source_valid at that revision, while unchanged revision metadata is retained for content-only corrections. A revision change without a content change returns 0 and leaves the current version untouched. An insert or content change returns 1; a content change with an older revision raises an error. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_city();';
-
--- ALKIS district has no feature validity date; use its source-reported revision.
-CREATE FUNCTION utt_pkg.curate_district()
-RETURNS integer
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-  source_district record;
-  current_district utt.district%ROWTYPE;
-  validity_start timestamptz;
-  recorded_at timestamptz;
-  content_changed boolean;
-  inserted_count integer := 0;
+CREATE PROCEDURE curation.curate_berlin_city_20261101(
+    snapshot_at timestamptz DEFAULT TIMESTAMPTZ '2026-11-01 00:00:00+00',
+    region public.geometry DEFAULT NULL)
+LANGUAGE plpgsql SET search_path=pg_catalog SET TimeZone='UTC' AS $$
+DECLARE source_relation regclass;
 BEGIN
-  SELECT r.source_revision_at INTO STRICT validity_start
-  FROM mirror.registry r
-  WHERE r.source_name = 'berlin_alkis' AND r.layer_name = 'alkis:bezirk'
-    AND r.last_imported_at IS NOT NULL
-  FOR SHARE;
-  IF validity_start IS NULL OR NOT isfinite(validity_start) THEN
-    RAISE EXCEPTION 'The stored berlin_alkis.alkis:bezirk layer has no finite source revision date.';
-  END IF;
-
-  LOCK TABLE utt.district IN SHARE ROW EXCLUSIVE MODE;
-  recorded_at := clock_timestamp();
-
-  IF NOT EXISTS (SELECT FROM mirror."alkis:bezirk_stored") THEN
-    RAISE EXCEPTION 'Stored berlin_alkis.alkis:bezirk contains no districts.';
-  END IF;
-  IF EXISTS (
-    SELECT FROM mirror."alkis:bezirk_stored"
-    WHERE name IS NULL OR name !~ '^[0-9]+$'
-      OR namgem IS NULL OR btrim(namgem) = ''
-      OR geom IS NULL OR public.ST_IsEmpty(geom)
-  ) THEN
-    RAISE EXCEPTION 'Stored districts require a numeric name ID, nonempty namgem and nonempty geometry.';
-  END IF;
-  IF EXISTS (
-    SELECT FROM mirror."alkis:bezirk_stored" GROUP BY name HAVING count(*) > 1
-  ) THEN
-    RAISE EXCEPTION 'Stored districts contain duplicate stable name IDs.';
-  END IF;
-
-  FOR source_district IN
-    SELECT name::bigint AS dist_id, namgem AS name, geom
-    FROM mirror."alkis:bezirk_stored"
-    ORDER BY name::bigint
-  LOOP
-    SELECT * INTO current_district FROM utt.district
-    WHERE district_id_official = source_district.dist_id AND upper_inf(utt_txn);
-
-    IF FOUND THEN
-      IF current_district.source_valid IS NULL THEN
-        RAISE EXCEPTION 'Current district % has no source-valid range.', source_district.dist_id;
-      END IF;
-
-      content_changed := current_district.name IS DISTINCT FROM source_district.name
-        OR public.ST_AsEWKB(current_district.geom) IS DISTINCT FROM public.ST_AsEWKB(source_district.geom);
-      IF NOT content_changed THEN
-        CONTINUE;
-      END IF;
-
-      IF validity_start < lower(current_district.source_valid) THEN
-        RAISE EXCEPTION 'Changed district % has source revision %, before current revision %.',
-          source_district.dist_id, validity_start, lower(current_district.source_valid);
-      END IF;
-
-      UPDATE utt.district
-      SET source_valid = CASE WHEN validity_start > lower(source_valid)
-            THEN tstzrange(lower(source_valid), validity_start, '[)')
-            ELSE source_valid END,
-          utt_txn = tstzrange(lower(utt_txn), recorded_at, '[)')
-      WHERE row_id = current_district.row_id;
-    END IF;
-
-    INSERT INTO utt.district (district_id_official, name, geom, source_valid, utt_txn)
-    VALUES (source_district.dist_id, source_district.name, source_district.geom,
-            tstzrange(validity_start, NULL, '[)'),
-            tstzrange(recorded_at, NULL, '[)'));
-    inserted_count := inserted_count + 1;
-  END LOOP;
-
-  RETURN inserted_count;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION utt_pkg.curate_district()
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.curate_district() TO uttdb_dba, uttdb_pipeline;
-COMMENT ON FUNCTION utt_pkg.curate_district() IS
-  'DBA/pipeline invoker-security curation of Berlin districts from mirror."alkis:bezirk_stored" into utt.district: numeric source name becomes the stable district_id_official, namgem becomes name, geometry retains its source CRS, and each version receives an internal row_id. Requires a successfully imported registry entry with a finite source_revision_at. No temporal input is accepted from the caller. The first import opens source_valid at the source revision and utt_txn at insertion. Name or geometry changes create versions under the shared temporal curation model; a revision change without a content change leaves the current version untouched. Returns the number of inserted district versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_district();';
-
--- The ALKIS building layer has no feature validity date; use its source-reported revision.
-CREATE FUNCTION utt_pkg.curate_building()
-RETURNS integer
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-  source_building record;
-  current_building utt.building%ROWTYPE;
-  validity_start timestamptz;
-  recorded_at timestamptz;
-  content_changed boolean;
-  inserted_count integer := 0;
-BEGIN
-  SELECT r.source_revision_at INTO STRICT validity_start
-  FROM mirror.registry r
-  WHERE r.source_name = 'berlin_alkis_gebaeude'
-    AND r.layer_name = 'alkis_gebaeude:gebaeude'
-    AND r.last_imported_at IS NOT NULL
-  FOR SHARE;
-  IF validity_start IS NULL OR NOT isfinite(validity_start) THEN
-    RAISE EXCEPTION 'The stored berlin_alkis_gebaeude.alkis_gebaeude:gebaeude layer has no finite source revision date.';
-  END IF;
-
-  LOCK TABLE utt.building IN SHARE ROW EXCLUSIVE MODE;
-  recorded_at := clock_timestamp();
-
-  IF NOT EXISTS (SELECT FROM mirror."alkis_gebaeude:gebaeude_stored") THEN
-    RAISE EXCEPTION 'Stored berlin_alkis_gebaeude.alkis_gebaeude:gebaeude contains no buildings.';
-  END IF;
-  IF EXISTS (
-    SELECT FROM mirror."alkis_gebaeude:gebaeude_stored"
-    WHERE fid IS NULL OR uuid IS NULL OR btrim(uuid) = ''
-      OR geom IS NULL OR public.ST_IsEmpty(geom)
-      OR nullif(btrim(hoh), '') IS NOT NULL
-        AND lower(btrim(hoh)) NOT IN ('true', 'false')
-  ) THEN
-    RAISE EXCEPTION 'Stored buildings require fid, nonempty uuid and geometry, and hoh must be true, false or empty.';
-  END IF;
-  IF EXISTS (
-    SELECT FROM mirror."alkis_gebaeude:gebaeude_stored"
-    GROUP BY uuid HAVING count(*) > 1
-  ) THEN
-    RAISE EXCEPTION 'Stored buildings contain duplicate stable uuid values.';
-  END IF;
-
-  FOR source_building IN
-    SELECT fid, uuid, geom, gfk, bezgfk, ofl, bezofl, aog, aug,
-           nullif(btrim(hoh), '')::boolean AS hoh,
-           bat, bezbat, nam, baw, bezbaw, zus, bezzus,
-           lag, namlag, hnr, pnr, lnr, bezeich
-    FROM mirror."alkis_gebaeude:gebaeude_stored"
-    ORDER BY uuid
-  LOOP
-    SELECT * INTO current_building FROM utt.building
-    WHERE building_id_official = source_building.uuid AND upper_inf(utt_txn);
-
-    IF FOUND THEN
-      IF current_building.source_valid IS NULL THEN
-        RAISE EXCEPTION 'Current building % has no source-valid range.', source_building.uuid;
-      END IF;
-
-      content_changed :=
-        public.ST_AsEWKB(current_building.geom) IS DISTINCT FROM public.ST_AsEWKB(source_building.geom)
-        OR current_building.building_function IS DISTINCT FROM source_building.gfk
-        OR current_building.building_function_description IS DISTINCT FROM source_building.bezgfk
-        OR current_building.position_relative_to_ground IS DISTINCT FROM source_building.ofl
-        OR current_building.position_relative_to_ground_description IS DISTINCT FROM source_building.bezofl
-        OR current_building.storeys_above_ground IS DISTINCT FROM source_building.aog
-        OR current_building.storeys_below_ground IS DISTINCT FROM source_building.aug
-        OR current_building.highrise IS DISTINCT FROM source_building.hoh
-        OR current_building.building_component_type IS DISTINCT FROM source_building.bat
-        OR current_building.building_component_type_description IS DISTINCT FROM source_building.bezbat
-        OR current_building.name IS DISTINCT FROM source_building.nam
-        OR current_building.building_configuration IS DISTINCT FROM source_building.baw
-        OR current_building.building_configuration_description IS DISTINCT FROM source_building.bezbaw
-        OR current_building.building_condition IS DISTINCT FROM source_building.zus
-        OR current_building.building_condition_description IS DISTINCT FROM source_building.bezzus
-        OR current_building.street_code IS DISTINCT FROM source_building.lag
-        OR current_building.street_name IS DISTINCT FROM source_building.namlag
-        OR current_building.house_number IS DISTINCT FROM source_building.hnr
-        OR current_building.pseudo_house_number IS DISTINCT FROM source_building.pnr
-        OR current_building.building_association_number IS DISTINCT FROM source_building.lnr
-        OR current_building.aaa_description IS DISTINCT FROM source_building.bezeich;
-      IF NOT content_changed THEN
-        CONTINUE;
-      END IF;
-
-      IF validity_start < lower(current_building.source_valid) THEN
-        RAISE EXCEPTION 'Changed building % has source revision %, before current revision %.',
-          source_building.uuid, validity_start, lower(current_building.source_valid);
-      END IF;
-
-      UPDATE utt.building
-      SET source_valid = CASE WHEN validity_start > lower(source_valid)
-            THEN tstzrange(lower(source_valid), validity_start, '[)')
-            ELSE source_valid END,
-          utt_txn = tstzrange(lower(utt_txn), recorded_at, '[)')
-      WHERE row_id = current_building.row_id;
-    END IF;
-
-    INSERT INTO utt.building (
-      source_fid, building_id_official, geom, building_function, building_function_description, position_relative_to_ground, position_relative_to_ground_description, storeys_above_ground, storeys_below_ground, highrise,
-      building_component_type, building_component_type_description, name, building_configuration, building_configuration_description, building_condition, building_condition_description, street_code, street_name,
-      house_number, pseudo_house_number, building_association_number, aaa_description, source_valid, utt_txn
-    ) VALUES (
-      source_building.fid, source_building.uuid, source_building.geom,
-      source_building.gfk, source_building.bezgfk, source_building.ofl,
-      source_building.bezofl, source_building.aog, source_building.aug,
-      source_building.hoh, source_building.bat, source_building.bezbat,
-      source_building.nam, source_building.baw, source_building.bezbaw,
-      source_building.zus, source_building.bezzus, source_building.lag,
-      source_building.namlag, source_building.hnr, source_building.pnr,
-      source_building.lnr, source_building.bezeich,
-      tstzrange(validity_start, NULL, '[)'),
-      tstzrange(recorded_at, NULL, '[)')
-    );
-    inserted_count := inserted_count + 1;
-  END LOOP;
-
-  RETURN inserted_count;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION utt_pkg.curate_building()
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.curate_building() TO uttdb_dba, uttdb_pipeline;
-COMMENT ON FUNCTION utt_pkg.curate_building() IS
-  'DBA/pipeline invoker-security curation of Berlin ALKIS buildings from mirror."alkis_gebaeude:gebaeude_stored" into utt.building. Source uuid supplies building_id_official; source fid is retained as technical source metadata in source_fid but does not trigger versions. Geometry and the directly mapped ALKIS descriptive attributes gfk, bezgfk, ofl, bezofl, aog, aug, hoh, bat, bezbat, nam, baw, bezbaw, zus, bezzus, lag, namlag, hnr, pnr, lnr and bezeich define content. The exact registry source_revision_at opens source_valid because the layer has no feature validity date. Content changes create versions under the shared temporal model; a revision or fid change alone creates no version. Derived classification, heritage, height and energy fields remain NULL. Returns the number of inserted versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_building();';
-
-CREATE FUNCTION utt_pkg.curate_block()
-RETURNS integer
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-  source_block record;
-  current_block utt.block%ROWTYPE;
-  imported_at timestamptz;
-  recorded_at timestamptz;
-  content_changed boolean;
-  inserted_count integer := 0;
-BEGIN
-  SELECT r.last_imported_at INTO STRICT imported_at
-  FROM mirror.registry r
-  WHERE r.source_name = 'berlin_bloecke' AND r.layer_name = 'bloecke:rbs_bloecke'
-    AND r.last_imported_at IS NOT NULL
-  FOR SHARE;
-
-  LOCK TABLE utt.block IN SHARE ROW EXCLUSIVE MODE;
-  recorded_at := clock_timestamp();
-
-  IF NOT EXISTS (SELECT FROM mirror."bloecke:rbs_bloecke_stored") THEN
-    RAISE EXCEPTION 'Stored berlin_bloecke.bloecke:rbs_bloecke contains no blocks.';
-  END IF;
-  IF EXISTS (
-    SELECT FROM mirror."bloecke:rbs_bloecke_stored"
-    WHERE blknr IS NULL OR blknr !~ '^[0-9]+$'
-      OR plr IS NULL OR plr !~ '^[0-9]+$'
-      OR bez IS NULL OR bez !~ '^[0-9]+$'
-      OR datum IS NULL OR geom IS NULL OR public.ST_IsEmpty(geom)
-  ) THEN
-    RAISE EXCEPTION 'Stored blocks require numeric blknr, plr and bez, plus datum and nonempty geometry.';
-  END IF;
-  IF EXISTS (
-    SELECT FROM mirror."bloecke:rbs_bloecke_stored" GROUP BY blknr HAVING count(*) > 1
-  ) THEN
-    RAISE EXCEPTION 'Stored blocks contain duplicate stable blknr IDs.';
-  END IF;
-
-  FOR source_block IN
-    SELECT blknr::bigint AS blk_id, geom, plr::bigint AS planning_area_no,
-           11000000 + bez::bigint AS in_district,
-           datum::timestamp AT TIME ZONE 'UTC' AS validity_start,
-           CASE WHEN public.ST_Covers(geom, public.ST_Centroid(geom))
-             THEN public.ST_Centroid(geom)
-             ELSE public.ST_PointOnSurface(geom)
-           END AS centroid
-    FROM mirror."bloecke:rbs_bloecke_stored"
-    ORDER BY blknr::bigint
-  LOOP
-    SELECT * INTO current_block FROM utt.block
-    WHERE block_id_official = source_block.blk_id AND upper_inf(utt_txn);
-
-    IF FOUND THEN
-      IF current_block.source_valid IS NULL THEN
-        RAISE EXCEPTION 'Current block % has no source-valid range.', source_block.blk_id;
-      END IF;
-
-      content_changed := current_block.planning_area_no IS DISTINCT FROM source_block.planning_area_no
-        OR current_block.mostly_district_id_official IS DISTINCT FROM source_block.in_district
-        OR public.ST_AsEWKB(current_block.geom) IS DISTINCT FROM public.ST_AsEWKB(source_block.geom)
-        OR public.ST_AsEWKB(current_block.centroid) IS DISTINCT FROM public.ST_AsEWKB(source_block.centroid);
-      IF NOT content_changed THEN
-        CONTINUE;
-      END IF;
-
-      IF source_block.validity_start < lower(current_block.source_valid) THEN
-        RAISE EXCEPTION 'Changed block % has source validity %, before current validity %.',
-          source_block.blk_id, source_block.validity_start, lower(current_block.source_valid);
-      END IF;
-
-      UPDATE utt.block
-      SET source_valid = CASE WHEN source_block.validity_start > lower(source_valid)
-            THEN tstzrange(lower(source_valid), source_block.validity_start, '[)')
-            ELSE source_valid END,
-          utt_txn = tstzrange(lower(utt_txn), recorded_at, '[)')
-      WHERE row_id = current_block.row_id;
-    END IF;
-
-    INSERT INTO utt.block (
-      block_id_official, geom, planning_area_no, mostly_district_id_official, centroid, source_valid, utt_txn
-    ) VALUES (
-      source_block.blk_id, source_block.geom, source_block.planning_area_no,
-      source_block.in_district, source_block.centroid,
-      tstzrange(source_block.validity_start, NULL, '[)'),
-      tstzrange(recorded_at, NULL, '[)')
-    );
-    inserted_count := inserted_count + 1;
-  END LOOP;
-
-  RETURN inserted_count;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION utt_pkg.curate_block()
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.curate_block() TO uttdb_dba, uttdb_pipeline;
-COMMENT ON FUNCTION utt_pkg.curate_block() IS
-  'DBA/pipeline invoker-security curation of Berlin statistical blocks from mirror."bloecke:rbs_bloecke_stored" into utt.block: numeric blknr becomes stable block_id_official, plr becomes planning_area_no, bez becomes the long Berlin district ID, datum starts source_valid at midnight UTC, and geometry retains its source CRS. Centroid is the geometric centroid when covered by the block, otherwise ST_PointOnSurface provides an interior representative point. Requires a successfully imported registry entry. No temporal input is accepted from the caller. Geometry, derived centroid, planning area or district changes create versions under the shared temporal curation model; a changed datum without a content change leaves the current version untouched. Returns the number of inserted block versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_block();';
-
-CREATE FUNCTION utt_pkg.curate_plot()
-RETURNS integer
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-  source_plot record;
-  current_plot utt.plot%ROWTYPE;
-  imported_at timestamptz;
-  recorded_at timestamptz;
-  content_changed boolean;
-  inserted_count integer := 0;
-BEGIN
-  SELECT r.last_imported_at INTO STRICT imported_at
-  FROM mirror.registry r
-  WHERE r.source_name = 'berlin_alkis' AND r.layer_name = 'alkis:flurstuecke'
-    AND r.last_imported_at IS NOT NULL
-  FOR SHARE;
-
-  LOCK TABLE utt.plot IN SHARE ROW EXCLUSIVE MODE;
-  recorded_at := clock_timestamp();
-
-  IF NOT EXISTS (SELECT FROM mirror."alkis:flurstuecke_stored") THEN
-    RAISE EXCEPTION 'Stored berlin_alkis.alkis:flurstuecke contains no plots.';
-  END IF;
-  IF EXISTS (
-    SELECT FROM mirror."alkis:flurstuecke_stored"
-    WHERE fsko IS NULL OR fsko !~ '^[0-9]+_*$'
-      OR rtrim(fsko, '_') = ''
-      OR zae IS NULL OR zae !~ '^[0-9]+$'
-      OR gmk IS NULL OR gmk !~ '^[0-9]+$'
-      OR fln IS NULL OR fln !~ '^[0-9]+$'
-      OR gdz IS NULL OR gdz !~ '^[0-9]+$'
-      OR beg IS NULL OR geom IS NULL OR public.ST_IsEmpty(geom)
-  ) THEN
-    RAISE EXCEPTION 'Stored plots require a numeric fsko with optional trailing underscores, numeric zae, gmk, fln and gdz, plus beg and nonempty geometry.';
-  END IF;
-  IF EXISTS (
-    SELECT FROM mirror."alkis:flurstuecke_stored"
-    GROUP BY rtrim(fsko, '_')::bigint HAVING count(*) > 1
-  ) THEN
-    RAISE EXCEPTION 'Stored plots contain duplicate stable fsko IDs after removing padding.';
-  END IF;
-
-  FOR source_plot IN
-    SELECT rtrim(fsko, '_')::bigint AS fsko, geom,
-           zae::bigint AS zae, gmk::bigint AS gmk, fln::bigint AS fln,
-           gdz::bigint AS in_district,
-           beg::timestamp AT TIME ZONE 'UTC' AS validity_start
-    FROM mirror."alkis:flurstuecke_stored"
-    ORDER BY rtrim(fsko, '_')::bigint
-  LOOP
-    SELECT * INTO current_plot FROM utt.plot
-    WHERE plot_id_official = source_plot.fsko AND upper_inf(utt_txn);
-
-    IF FOUND THEN
-      IF current_plot.source_valid IS NULL THEN
-        RAISE EXCEPTION 'Current plot % has no source-valid range.', source_plot.fsko;
-      END IF;
-
-      content_changed :=
-        public.ST_AsEWKB(current_plot.geom) IS DISTINCT FROM public.ST_AsEWKB(source_plot.geom)
-        OR current_plot.parcel_number_numerator IS DISTINCT FROM source_plot.zae
-        OR current_plot.cadastral_district_code IS DISTINCT FROM source_plot.gmk
-        OR current_plot.cadastral_field_number IS DISTINCT FROM source_plot.fln
-        OR current_plot.district_id_official IS DISTINCT FROM source_plot.in_district;
-      IF NOT content_changed THEN
-        CONTINUE;
-      END IF;
-
-      IF source_plot.validity_start < lower(current_plot.source_valid) THEN
-        RAISE EXCEPTION 'Changed plot % has source validity %, before current validity %.',
-          source_plot.fsko, source_plot.validity_start,
-          lower(current_plot.source_valid);
-      END IF;
-
-      UPDATE utt.plot
-      SET source_valid = CASE WHEN source_plot.validity_start > lower(source_valid)
-            THEN tstzrange(lower(source_valid), source_plot.validity_start, '[)')
-            ELSE source_valid END,
-          utt_txn = tstzrange(lower(utt_txn), recorded_at, '[)')
-      WHERE row_id = current_plot.row_id;
-    END IF;
-
-    INSERT INTO utt.plot (
-      plot_id_official, geom, parcel_number_numerator, cadastral_district_code, cadastral_field_number, district_id_official, source_valid, utt_txn
-    ) VALUES (
-      source_plot.fsko, source_plot.geom, source_plot.zae, source_plot.gmk,
-      source_plot.fln, source_plot.in_district,
-      tstzrange(source_plot.validity_start, NULL, '[)'),
-      tstzrange(recorded_at, NULL, '[)')
-    );
-    inserted_count := inserted_count + 1;
-  END LOOP;
-
-  RETURN inserted_count;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION utt_pkg.curate_plot()
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.curate_plot() TO uttdb_dba, uttdb_pipeline;
-COMMENT ON FUNCTION utt_pkg.curate_plot() IS
-  'DBA/pipeline invoker-security curation of Berlin cadastral plots from mirror."alkis:flurstuecke_stored" into utt.plot. The numeric portion of fsko becomes the stable plot_id_official; trailing source padding is removed. Geometry, zae, gmk, fln and district code gdz are copied, and beg starts source_valid at midnight UTC. Geometry or mapped cadastral changes create versions under the shared temporal model; changed beg alone creates no version. Returns the number of inserted versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_plot();';
-
-CREATE FUNCTION utt_pkg.curate_address()
-RETURNS integer
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-  source_address record;
-  current_address utt.address%ROWTYPE;
-  imported_at timestamptz;
-  recorded_at timestamptz;
-  content_changed boolean;
-  inserted_count integer := 0;
-BEGIN
-  SELECT r.last_imported_at INTO STRICT imported_at
-  FROM mirror.registry r
-  WHERE r.source_name = 'berlin_adressen'
-    AND r.layer_name = 'adressen_rbs:adressen_rbs'
-    AND r.last_imported_at IS NOT NULL
-  FOR SHARE;
-
-  LOCK TABLE utt.address IN SHARE ROW EXCLUSIVE MODE;
-  recorded_at := clock_timestamp();
-
-  IF NOT EXISTS (
-    SELECT FROM mirror."adressen_rbs:adressen_rbs_stored"
-  ) THEN
-    RAISE EXCEPTION 'Stored berlin_adressen.adressen_rbs:adressen_rbs contains no address records.';
-  END IF;
-  IF EXISTS (
-    SELECT FROM mirror."adressen_rbs:adressen_rbs_stored"
-    WHERE adr_ident IS NULL OR adr_ident !~ '^[0-9]+$'
-      OR aufn_dt IS NULL OR geom IS NULL OR public.ST_IsEmpty(geom)
-      OR hausnr IS NULL OR hausnr !~ '^[0-9]+$'
-      OR strnam IS NULL OR btrim(strnam) = ''
-      OR strnr IS NULL OR btrim(strnr) = ''
-      OR postleit IS NULL OR postleit !~ '^[0-9]+$'
-      OR bez IS NULL OR bez !~ '^[0-9]+$'
-      OR plr IS NULL OR plr !~ '^[0-9]+$'
-      OR blk IS NULL OR blk !~ '^[0-9]+$'
-  ) THEN
-    RAISE EXCEPTION 'Stored RBS records require numeric adr_ident, hausnr, postleit, bez, plr and blk, plus aufn_dt and nonempty street and geometry data.';
-  END IF;
-  IF EXISTS (
-    SELECT FROM mirror."adressen_rbs:adressen_rbs_stored"
-    GROUP BY adr_ident::bigint HAVING count(*) > 1
-  ) THEN
-    RAISE EXCEPTION 'Stored RBS records contain duplicate stable adr_ident values.';
-  END IF;
-
-  FOR source_address IN
-    SELECT adr_ident::bigint AS address_id, geom,
-           strnam AS street_name, strnr AS street_id,
-           hausnr::integer AS house_no, hausnrz AS house_no_suffix,
-           postleit::bigint AS pca_id, blk::bigint AS blk_id,
-           11000000 + bez::bigint AS district_id,
-           bez_name AS district_name, ot AS place_id,
-           ot_name AS place_name, plr::bigint AS planning_area_no,
-           plr_name AS planning_area_name, aufn_dt::timestamp AS address_date,
-           str_typ AS type,
-           aufn_dt::timestamp AT TIME ZONE 'UTC' AS validity_start
-    FROM mirror."adressen_rbs:adressen_rbs_stored"
-    ORDER BY adr_ident::bigint
-  LOOP
-    SELECT * INTO current_address FROM utt.address
-    WHERE address_id_official = source_address.address_id AND upper_inf(utt_txn);
-
-    IF FOUND THEN
-      IF current_address.source_valid IS NULL THEN
-        RAISE EXCEPTION 'Current address % has no source-valid range.', source_address.address_id;
-      END IF;
-
-      content_changed :=
-        public.ST_AsEWKB(current_address.geom) IS DISTINCT FROM public.ST_AsEWKB(source_address.geom)
-        OR current_address.street_name IS DISTINCT FROM source_address.street_name
-        OR current_address.street_id IS DISTINCT FROM source_address.street_id
-        OR current_address.house_number IS DISTINCT FROM source_address.house_no
-        OR current_address.house_number_suffix IS DISTINCT FROM source_address.house_no_suffix
-        OR current_address.pca_id IS DISTINCT FROM source_address.pca_id
-        OR current_address.block_id_official IS DISTINCT FROM source_address.blk_id
-        OR current_address.district_id_official IS DISTINCT FROM source_address.district_id
-        OR current_address.district_name IS DISTINCT FROM source_address.district_name
-        OR current_address.place_id IS DISTINCT FROM source_address.place_id
-        OR current_address.place_name IS DISTINCT FROM source_address.place_name
-        OR current_address.planning_area_no IS DISTINCT FROM source_address.planning_area_no
-        OR current_address.planning_area_name IS DISTINCT FROM source_address.planning_area_name
-        OR current_address.type IS DISTINCT FROM source_address.type;
-      IF NOT content_changed THEN
-        CONTINUE;
-      END IF;
-
-      IF source_address.validity_start < lower(current_address.source_valid) THEN
-        RAISE EXCEPTION 'Changed address % has source validity %, before current validity %.',
-          source_address.address_id, source_address.validity_start,
-          lower(current_address.source_valid);
-      END IF;
-
-      UPDATE utt.address
-      SET source_valid = CASE WHEN source_address.validity_start > lower(source_valid)
-            THEN tstzrange(lower(source_valid), source_address.validity_start, '[)')
-            ELSE source_valid END,
-          utt_txn = tstzrange(lower(utt_txn), recorded_at, '[)')
-      WHERE row_id = current_address.row_id;
-    END IF;
-
-    INSERT INTO utt.address (
-      address_id_official, geom, street_name, street_id, house_number, house_number_suffix,
-      pca_id, block_id_official, district_id_official, district_name, place_id, place_name,
-      planning_area_no, planning_area_name, address_date,
-      type, source_valid, utt_txn
-    ) VALUES (
-      source_address.address_id, source_address.geom, source_address.street_name,
-      source_address.street_id, source_address.house_no, source_address.house_no_suffix,
-      source_address.pca_id, source_address.blk_id, source_address.district_id,
-      source_address.district_name, source_address.place_id, source_address.place_name,
-      source_address.planning_area_no, source_address.planning_area_name,
-      source_address.address_date,
-      source_address.type,
-      tstzrange(source_address.validity_start, NULL, '[)'),
-      tstzrange(recorded_at, NULL, '[)')
-    );
-    inserted_count := inserted_count + 1;
-  END LOOP;
-
-  RETURN inserted_count;
-END;
-$$;
-
-REVOKE ALL ON FUNCTION utt_pkg.curate_address()
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.curate_address() TO uttdb_dba, uttdb_pipeline;
-COMMENT ON FUNCTION utt_pkg.curate_address() IS
-  'DBA/pipeline invoker-security curation of Berlin RBS address records from mirror."adressen_rbs:adressen_rbs_stored" into utt.address. Numeric adr_ident is the stable address_id_official; source address and location fields are copied; str_typ becomes type; bez is expanded to the long Berlin district ID; aufn_dt starts source_valid at midnight UTC. Geometry or mapped descriptive/location changes create versions under the shared temporal model; changed aufn_dt alone creates no version. This routine leaves building_id_official and plot_id_official NULL. Returns the number of inserted versions, including first imports. Missing source objects are not closed or deleted. Requires registry/source SELECT and target SELECT/INSERT/UPDATE plus row/table-lock privileges. Example: SELECT utt_pkg.curate_address();';
-
-CREATE FUNCTION utt_pkg.curate_relation(relation_name text)
-RETURNS integer
-LANGUAGE plpgsql
-SECURITY INVOKER
-SET search_path = pg_catalog
-AS $$
-DECLARE
-  inserted_count integer;
-BEGIN
-  CASE relation_name
-    WHEN 'building_block' THEN
-      LOCK TABLE utt.relation_bldg_block IN SHARE ROW EXCLUSIVE MODE;
-      WITH candidates AS (
-        SELECT b.row_id AS building_row_id, k.row_id AS block_row_id,
-               round((public.ST_Area(public.ST_Intersection(b.geom, k.geom))
-                 / public.ST_Area(b.geom))::numeric, 3) AS relative_intersection
-        FROM utt.building b
-        JOIN utt.block k ON public.ST_Intersects(b.geom, k.geom)
-        WHERE upper_inf(b.utt_txn) AND upper_inf(k.utt_txn)
-          AND b.geom IS NOT NULL AND k.geom IS NOT NULL
-          AND NOT public.ST_IsEmpty(b.geom) AND NOT public.ST_IsEmpty(k.geom)
-          AND public.ST_Area(b.geom) > 0
+    source_relation:=curation.curation_berlin_source('berlin_alkis','alkis:land',snapshot_at,ARRAY['lan','namlan','geom']);
+    DROP TABLE IF EXISTS pg_temp.berlin_city_working;
+    CREATE TEMP TABLE berlin_city_working (LIKE curation.berlin_city INCLUDING ALL) ON COMMIT DROP;
+    EXECUTE format($query$
+      INSERT INTO pg_temp.berlin_city_working (
+        city_id_official,
+        name,
+        geom
       )
-      INSERT INTO utt.relation_bldg_block (
-        building_row_id, block_row_id, relative_intersection
-      )
-      SELECT building_row_id, block_row_id, relative_intersection
-      FROM candidates
-      WHERE relative_intersection > 0.02 AND relative_intersection <= 1
-      ON CONFLICT DO NOTHING;
-
-    WHEN 'building_plot' THEN
-      LOCK TABLE utt.relation_bldg_plot IN SHARE ROW EXCLUSIVE MODE;
-      WITH candidates AS (
-        SELECT b.row_id AS building_row_id, p.row_id AS plot_row_id,
-               round((public.ST_Area(public.ST_Intersection(b.geom, p.geom))
-                 / public.ST_Area(b.geom))::numeric, 3) AS relative_intersection
-        FROM utt.building b
-        JOIN utt.plot p ON public.ST_Intersects(b.geom, p.geom)
-        WHERE upper_inf(b.utt_txn) AND upper_inf(p.utt_txn)
-          AND b.geom IS NOT NULL AND p.geom IS NOT NULL
-          AND NOT public.ST_IsEmpty(b.geom) AND NOT public.ST_IsEmpty(p.geom)
-          AND public.ST_Area(b.geom) > 0
-      )
-      INSERT INTO utt.relation_bldg_plot (
-        building_row_id, plot_row_id, relative_intersection
-      )
-      SELECT building_row_id, plot_row_id, relative_intersection
-      FROM candidates
-      WHERE relative_intersection > 0.02 AND relative_intersection <= 1
-      ON CONFLICT DO NOTHING;
-
-    WHEN 'plot_block' THEN
-      LOCK TABLE utt.relation_plot_block IN SHARE ROW EXCLUSIVE MODE;
-      WITH candidates AS (
-        SELECT p.row_id AS plot_row_id, k.row_id AS block_row_id,
-               round((public.ST_Area(public.ST_Intersection(p.geom, k.geom))
-                 / public.ST_Area(p.geom))::numeric, 3) AS relative_intersection
-        FROM utt.plot p
-        JOIN utt.block k ON public.ST_Intersects(p.geom, k.geom)
-        WHERE upper_inf(p.utt_txn) AND upper_inf(k.utt_txn)
-          AND p.geom IS NOT NULL AND k.geom IS NOT NULL
-          AND NOT public.ST_IsEmpty(p.geom) AND NOT public.ST_IsEmpty(k.geom)
-          AND public.ST_Area(p.geom) > 0
-      )
-      INSERT INTO utt.relation_plot_block (
-        plot_row_id, block_row_id, relative_intersection
-      )
-      SELECT plot_row_id, block_row_id, relative_intersection
-      FROM candidates
-      WHERE relative_intersection > 0.02 AND relative_intersection <= 1
-      ON CONFLICT DO NOTHING;
-
-    ELSE
-      RAISE EXCEPTION 'Unsupported relation %. Use building_block, building_plot or plot_block.',
-        relation_name;
-  END CASE;
-
-  GET DIAGNOSTICS inserted_count = ROW_COUNT;
-  RETURN inserted_count;
+      SELECT
+        (lan)::bigint,
+        (namlan)::character varying,
+        (geom)::public.geometry
+      FROM %s
+      WHERE utt_txn @> $1 AND geom IS NOT NULL AND NOT public.ST_IsEmpty(geom)
+        AND public.ST_SRID(geom)>0
+        AND ($2 IS NULL OR public.ST_Intersects(geom,$2))
+      ORDER BY utt_key
+    $query$,source_relation) USING snapshot_at,region;
+    ANALYZE pg_temp.berlin_city_working;
 END;
 $$;
+COMMENT ON PROCEDURE curation.curate_berlin_city_20261101(timestamptz,public.geometry) IS 'Internal SQL build step called by curate_berlin_20261101 in the same transaction. Reads the exact mirror snapshot and creates an indexed temporary city table, preserving nullable descriptive values and source dates. Does not install output or commit. Example inside the orchestrator transaction: CALL curation.curate_berlin_city_20261101(''2026-11-01 UTC'',NULL);';
 
-REVOKE ALL ON FUNCTION utt_pkg.curate_relation(text)
-  FROM PUBLIC, uttdb_reader, uttdb_developer, uttdb_pipeline, uttdb_app_reader, uttdb_app_writer;
-GRANT EXECUTE ON FUNCTION utt_pkg.curate_relation(text) TO uttdb_dba, uttdb_pipeline;
-COMMENT ON FUNCTION utt_pkg.curate_relation(text) IS
-  'DBA/pipeline invoker-security calculation of one supported spatial relation between current immutable UTT entity versions. relation_name must be building_block, building_plot or plot_block. The stored fraction is intersection area divided by the first entity area (building or plot), rounded to three decimals; values at or below 0.02 are omitted. Existing pairs are left unchanged, so reruns insert only relations for newly curated versions. Relation rows reference endpoint row_id values and have no separate temporal ranges; their temporal context comes from those immutable versions. Returns the number of inserted pairs. Examples: SELECT utt_pkg.curate_relation(''building_block''); SELECT utt_pkg.curate_relation(''building_plot''); SELECT utt_pkg.curate_relation(''plot_block'');';
+CREATE PROCEDURE curation.curate_berlin_district_20261101(
+    snapshot_at timestamptz DEFAULT TIMESTAMPTZ '2026-11-01 00:00:00+00',
+    region public.geometry DEFAULT NULL)
+LANGUAGE plpgsql SET search_path=pg_catalog SET TimeZone='UTC' AS $$
+DECLARE source_relation regclass;
+BEGIN
+    source_relation:=curation.curation_berlin_source('berlin_alkis','alkis:bezirk',snapshot_at,ARRAY['name','namgem','geom']);
+    DROP TABLE IF EXISTS pg_temp.berlin_district_working;
+    CREATE TEMP TABLE berlin_district_working (LIKE curation.berlin_district INCLUDING ALL) ON COMMIT DROP;
+    EXECUTE format($query$
+      INSERT INTO pg_temp.berlin_district_working (
+        district_id_official,
+        name,
+        geom
+      )
+      SELECT
+        (name)::bigint,
+        (namgem)::character varying,
+        (geom)::public.geometry
+      FROM %s
+      WHERE utt_txn @> $1 AND geom IS NOT NULL AND NOT public.ST_IsEmpty(geom)
+        AND public.ST_SRID(geom)>0
+        AND ($2 IS NULL OR public.ST_Intersects(geom,$2))
+      ORDER BY utt_key
+    $query$,source_relation) USING snapshot_at,region;
+    ANALYZE pg_temp.berlin_district_working;
+END;
+$$;
+COMMENT ON PROCEDURE curation.curate_berlin_district_20261101(timestamptz,public.geometry) IS 'Internal SQL build step called by curate_berlin_20261101 in the same transaction. Reads the exact mirror snapshot and creates an indexed temporary district table, preserving nullable descriptive values and source dates. Does not install output or commit. Example inside the orchestrator transaction: CALL curation.curate_berlin_district_20261101(''2026-11-01 UTC'',NULL);';
+
+CREATE PROCEDURE curation.curate_berlin_block_20261101(
+    snapshot_at timestamptz DEFAULT TIMESTAMPTZ '2026-11-01 00:00:00+00',
+    region public.geometry DEFAULT NULL)
+LANGUAGE plpgsql SET search_path=pg_catalog SET TimeZone='UTC' AS $$
+DECLARE source_relation regclass;
+BEGIN
+    source_relation:=curation.curation_berlin_source('berlin_bloecke','bloecke:rbs_bloecke',snapshot_at,ARRAY['blknr','geom','plr','bez','datum']);
+    DROP TABLE IF EXISTS pg_temp.berlin_block_working;
+    CREATE TEMP TABLE berlin_block_working (LIKE curation.berlin_block INCLUDING ALL) ON COMMIT DROP;
+    EXECUTE format($query$
+      INSERT INTO pg_temp.berlin_block_working (
+        block_id_official,
+        geom,
+        planning_area_no,
+        mostly_district_id_official,
+        centroid,
+        source_date
+      )
+      SELECT
+        (blknr)::bigint,
+        (geom)::public.geometry,
+        (plr)::bigint,
+        (11000000 + bez::bigint)::bigint,
+        (CASE WHEN public.ST_Covers(geom,public.ST_Centroid(geom)) THEN public.ST_Centroid(geom) ELSE public.ST_PointOnSurface(geom) END)::public.geometry,
+        (datum::timestamp)::timestamp without time zone
+      FROM %s
+      WHERE utt_txn @> $1 AND geom IS NOT NULL AND NOT public.ST_IsEmpty(geom)
+        AND public.ST_SRID(geom)>0
+        AND ($2 IS NULL OR public.ST_Intersects(geom,$2))
+      ORDER BY utt_key
+    $query$,source_relation) USING snapshot_at,region;
+    ANALYZE pg_temp.berlin_block_working;
+END;
+$$;
+COMMENT ON PROCEDURE curation.curate_berlin_block_20261101(timestamptz,public.geometry) IS 'Internal SQL build step called by curate_berlin_20261101 in the same transaction. Reads the exact mirror snapshot and creates an indexed temporary block table, preserving nullable descriptive values and source dates. Does not install output or commit. Example inside the orchestrator transaction: CALL curation.curate_berlin_block_20261101(''2026-11-01 UTC'',NULL);';
+
+CREATE PROCEDURE curation.curate_berlin_plot_20261101(
+    snapshot_at timestamptz DEFAULT TIMESTAMPTZ '2026-11-01 00:00:00+00',
+    region public.geometry DEFAULT NULL)
+LANGUAGE plpgsql SET search_path=pg_catalog SET TimeZone='UTC' AS $$
+DECLARE source_relation regclass;
+BEGIN
+    source_relation:=curation.curation_berlin_source('berlin_alkis','alkis:flurstuecke',snapshot_at,ARRAY['fsko','geom','zae','gmk','fln','gdz','beg']);
+    DROP TABLE IF EXISTS pg_temp.berlin_plot_working;
+    CREATE TEMP TABLE berlin_plot_working (LIKE curation.berlin_plot INCLUDING ALL) ON COMMIT DROP;
+    EXECUTE format($query$
+      INSERT INTO pg_temp.berlin_plot_working (
+        plot_id_official,
+        geom,
+        parcel_number_numerator,
+        cadastral_district_code,
+        cadastral_field_number,
+        district_id_official,
+        source_date
+      )
+      SELECT
+        (rtrim(fsko, '_'))::bigint,
+        (geom)::public.geometry,
+        (zae)::bigint,
+        (gmk)::bigint,
+        (fln)::bigint,
+        (gdz)::bigint,
+        (beg::timestamp)::timestamp without time zone
+      FROM %s
+      WHERE utt_txn @> $1 AND geom IS NOT NULL AND NOT public.ST_IsEmpty(geom)
+        AND public.ST_SRID(geom)>0
+        AND ($2 IS NULL OR public.ST_Intersects(geom,$2))
+      ORDER BY utt_key
+    $query$,source_relation) USING snapshot_at,region;
+    ANALYZE pg_temp.berlin_plot_working;
+END;
+$$;
+COMMENT ON PROCEDURE curation.curate_berlin_plot_20261101(timestamptz,public.geometry) IS 'Internal SQL build step called by curate_berlin_20261101 in the same transaction. Reads the exact mirror snapshot and creates an indexed temporary plot table, preserving nullable descriptive values and source dates. Does not install output or commit. Example inside the orchestrator transaction: CALL curation.curate_berlin_plot_20261101(''2026-11-01 UTC'',NULL);';
+
+CREATE PROCEDURE curation.curate_berlin_building_20261101(
+    snapshot_at timestamptz DEFAULT TIMESTAMPTZ '2026-11-01 00:00:00+00',
+    region public.geometry DEFAULT NULL)
+LANGUAGE plpgsql SET search_path=pg_catalog SET TimeZone='UTC' AS $$
+DECLARE source_relation regclass;
+BEGIN
+    source_relation:=curation.curation_berlin_source('berlin_alkis_gebaeude','alkis_gebaeude:gebaeude',snapshot_at,ARRAY['uuid','fid','geom','gfk','bezgfk','ofl','bezofl','aog','aug','hoh','bat','bezbat','nam','baw','bezbaw','zus','bezzus','lag','namlag','hnr','pnr','lnr','bezeich']);
+    DROP TABLE IF EXISTS pg_temp.berlin_building_working;
+    CREATE TEMP TABLE berlin_building_working (LIKE curation.berlin_building INCLUDING ALL) ON COMMIT DROP;
+    EXECUTE format($query$
+      INSERT INTO pg_temp.berlin_building_working (
+        building_id_official,
+        source_fid,
+        geom,
+        building_function,
+        building_function_description,
+        position_relative_to_ground,
+        position_relative_to_ground_description,
+        storeys_above_ground,
+        storeys_below_ground,
+        highrise,
+        building_component_type,
+        building_component_type_description,
+        name,
+        building_configuration,
+        building_configuration_description,
+        building_condition,
+        building_condition_description,
+        street_code,
+        street_name,
+        house_number,
+        pseudo_house_number,
+        building_association_number,
+        aaa_description
+      )
+      SELECT
+        (uuid)::text,
+        (fid)::bigint,
+        (geom)::public.geometry,
+        (gfk)::integer,
+        (bezgfk)::character varying,
+        (ofl)::integer,
+        (bezofl)::character varying,
+        (aog)::integer,
+        (aug)::integer,
+        (nullif(btrim(hoh), '')::boolean)::boolean,
+        (bat)::integer,
+        (bezbat)::character varying,
+        (nam)::character varying,
+        (baw)::integer,
+        (bezbaw)::character varying,
+        (zus)::integer,
+        (bezzus)::character varying,
+        (lag)::character varying,
+        (namlag)::character varying,
+        (hnr)::character varying,
+        (pnr)::character varying,
+        (lnr)::character varying,
+        (bezeich)::character varying
+      FROM %s
+      WHERE utt_txn @> $1 AND geom IS NOT NULL AND NOT public.ST_IsEmpty(geom)
+        AND public.ST_SRID(geom)>0
+        AND ($2 IS NULL OR public.ST_Intersects(geom,$2))
+      ORDER BY utt_key
+    $query$,source_relation) USING snapshot_at,region;
+    ANALYZE pg_temp.berlin_building_working;
+END;
+$$;
+COMMENT ON PROCEDURE curation.curate_berlin_building_20261101(timestamptz,public.geometry) IS 'Internal SQL build step called by curate_berlin_20261101 in the same transaction. Reads the exact mirror snapshot and creates an indexed temporary building table, preserving nullable descriptive values and source dates. Does not install output or commit. Example inside the orchestrator transaction: CALL curation.curate_berlin_building_20261101(''2026-11-01 UTC'',NULL);';
+
+CREATE PROCEDURE curation.curate_berlin_address_20261101(
+    snapshot_at timestamptz DEFAULT TIMESTAMPTZ '2026-11-01 00:00:00+00',
+    region public.geometry DEFAULT NULL)
+LANGUAGE plpgsql SET search_path=pg_catalog SET TimeZone='UTC' AS $$
+DECLARE source_relation regclass;
+BEGIN
+    source_relation:=curation.curation_berlin_source('berlin_adressen','adressen_rbs:adressen_rbs',snapshot_at,ARRAY['adr_ident','geom','strnam','strnr','hausnr','hausnrz','postleit','blk','bez','bez_name','ot','ot_name','plr','plr_name','aufn_dt','str_typ']);
+    DROP TABLE IF EXISTS pg_temp.berlin_address_working;
+    CREATE TEMP TABLE berlin_address_working (LIKE curation.berlin_address INCLUDING ALL) ON COMMIT DROP;
+    EXECUTE format($query$
+      INSERT INTO pg_temp.berlin_address_working (
+        address_id_official,
+        geom,
+        street_name,
+        street_id,
+        house_number,
+        house_number_suffix,
+        pca_id,
+        block_id_official,
+        district_id_official,
+        district_name,
+        place_id,
+        place_name,
+        planning_area_no,
+        planning_area_name,
+        address_date,
+        type
+      )
+      SELECT
+        (adr_ident)::bigint,
+        (geom)::public.geometry,
+        (strnam)::character varying,
+        (strnr)::character varying,
+        (hausnr)::integer,
+        (hausnrz)::character varying,
+        (postleit)::bigint,
+        (blk)::bigint,
+        (11000000 + bez::bigint)::bigint,
+        (bez_name)::character varying,
+        (ot)::character varying,
+        (ot_name)::character varying,
+        (plr)::bigint,
+        (plr_name)::character varying,
+        (aufn_dt::timestamp)::timestamp without time zone,
+        (str_typ)::character varying
+      FROM %s
+      WHERE utt_txn @> $1 AND geom IS NOT NULL AND NOT public.ST_IsEmpty(geom)
+        AND public.ST_SRID(geom)>0
+        AND ($2 IS NULL OR public.ST_Intersects(geom,$2))
+      ORDER BY utt_key
+    $query$,source_relation) USING snapshot_at,region;
+    ANALYZE pg_temp.berlin_address_working;
+END;
+$$;
+COMMENT ON PROCEDURE curation.curate_berlin_address_20261101(timestamptz,public.geometry) IS 'Internal SQL build step called by curate_berlin_20261101 in the same transaction. Reads the exact mirror snapshot and creates an indexed temporary address table, preserving nullable descriptive values and source dates. Does not install output or commit. Example inside the orchestrator transaction: CALL curation.curate_berlin_address_20261101(''2026-11-01 UTC'',NULL);';
+
+CREATE PROCEDURE curation.curate_berlin_relations_20261101()
+LANGUAGE plpgsql SET search_path=pg_catalog AS $$
+BEGIN
+
+    DROP TABLE IF EXISTS pg_temp.berlin_relation_building_block_working;
+    CREATE TEMP TABLE berlin_relation_building_block_working (
+      building_row_id bigint NOT NULL,block_row_id bigint NOT NULL,
+      relative_intersection numeric NOT NULL,
+      PRIMARY KEY (building_row_id,block_row_id)) ON COMMIT DROP;
+    INSERT INTO pg_temp.berlin_relation_building_block_working
+    SELECT a.row_id,b.row_id,fraction.value
+    FROM pg_temp.berlin_building_working a
+    CROSS JOIN LATERAL (
+      SELECT candidate.row_id,candidate.geom FROM pg_temp.berlin_block_working candidate
+      WHERE candidate.geom OPERATOR(public.&&) a.geom OFFSET 0
+    ) b
+    CROSS JOIN LATERAL (
+      SELECT round((public.ST_Area(public.ST_Intersection(a.geom,b.geom))
+        /NULLIF(public.ST_Area(a.geom),0))::numeric,3) AS value OFFSET 0
+    ) fraction
+    WHERE fraction.value>0.02;
+
+    DROP TABLE IF EXISTS pg_temp.berlin_relation_building_plot_working;
+    CREATE TEMP TABLE berlin_relation_building_plot_working (
+      building_row_id bigint NOT NULL,plot_row_id bigint NOT NULL,
+      relative_intersection numeric NOT NULL,
+      PRIMARY KEY (building_row_id,plot_row_id)) ON COMMIT DROP;
+    INSERT INTO pg_temp.berlin_relation_building_plot_working
+    SELECT a.row_id,b.row_id,fraction.value
+    FROM pg_temp.berlin_building_working a
+    CROSS JOIN LATERAL (
+      SELECT candidate.row_id,candidate.geom FROM pg_temp.berlin_plot_working candidate
+      WHERE candidate.geom OPERATOR(public.&&) a.geom OFFSET 0
+    ) b
+    CROSS JOIN LATERAL (
+      SELECT round((public.ST_Area(public.ST_Intersection(a.geom,b.geom))
+        /NULLIF(public.ST_Area(a.geom),0))::numeric,3) AS value OFFSET 0
+    ) fraction
+    WHERE fraction.value>0.02;
+
+    DROP TABLE IF EXISTS pg_temp.berlin_relation_plot_block_working;
+    CREATE TEMP TABLE berlin_relation_plot_block_working (
+      plot_row_id bigint NOT NULL,block_row_id bigint NOT NULL,
+      relative_intersection numeric NOT NULL,
+      PRIMARY KEY (plot_row_id,block_row_id)) ON COMMIT DROP;
+    INSERT INTO pg_temp.berlin_relation_plot_block_working
+    SELECT a.row_id,b.row_id,fraction.value
+    FROM pg_temp.berlin_plot_working a
+    CROSS JOIN LATERAL (
+      SELECT candidate.row_id,candidate.geom FROM pg_temp.berlin_block_working candidate
+      WHERE candidate.geom OPERATOR(public.&&) a.geom OFFSET 0
+    ) b
+    CROSS JOIN LATERAL (
+      SELECT round((public.ST_Area(public.ST_Intersection(a.geom,b.geom))
+        /NULLIF(public.ST_Area(a.geom),0))::numeric,3) AS value OFFSET 0
+    ) fraction
+    WHERE fraction.value>0.02;
+END;
+$$;
+COMMENT ON PROCEDURE curation.curate_berlin_relations_20261101() IS 'Internal chained curation step called after all entity working tables have been built by the Berlin orchestrator for one snapshot. Creates three temporary n:m relationship tables with one fraction per spatial pair; no historical combinations. Does not install or commit. Example in that build transaction: CALL curation.curate_berlin_relations_20261101();';
+
+CREATE PROCEDURE curation.curate_berlin_20261101(
+    snapshot_at timestamptz DEFAULT NULL,
+    region public.geometry DEFAULT NULL,git_revision text DEFAULT NULL)
+LANGUAGE plpgsql SECURITY DEFINER SET search_path=pg_catalog SET TimeZone='UTC' AS $$
+DECLARE entity text; output_name text; columns_sql text; unresolved_layers text;
+BEGIN
+    IF snapshot_at IS NOT NULL AND (NOT isfinite(snapshot_at) OR snapshot_at>clock_timestamp()) THEN
+      RAISE EXCEPTION 'Choose a finite mirror snapshot at or before build time.';
+    END IF;
+    IF region IS NOT NULL AND (public.ST_IsEmpty(region) OR NOT public.ST_IsValid(region)
+      OR public.ST_SRID(region)<=0) THEN RAISE EXCEPTION 'Region requires valid nonempty geometry with an explicit source-compatible CRS.'; END IF;
+    PERFORM pg_advisory_xact_lock(70303,1);
+    -- Prevent source publication/schema changes during the cooperating input selection.
+    LOCK TABLE mirror.registry IN EXCLUSIVE MODE;
+    SELECT string_agg(required.source_name || '/' || required.layer_name, ', '
+                      ORDER BY required.source_name,required.layer_name)
+      INTO unresolved_layers
+    FROM (VALUES
+      ('berlin_alkis','alkis:land'),
+      ('berlin_alkis','alkis:bezirk'),
+      ('berlin_alkis','alkis:flurstuecke'),
+      ('berlin_alkis_gebaeude','alkis_gebaeude:gebaeude'),
+      ('berlin_bloecke','bloecke:rbs_bloecke'),
+      ('berlin_adressen','adressen_rbs:adressen_rbs')
+    ) AS required(source_name,layer_name)
+    LEFT JOIN mirror.registry r ON r.source_name=required.source_name
+      AND r.layer_name=required.layer_name AND r.storage_mode='rows'
+      AND (snapshot_at IS NOT NULL OR NOT r.retired)
+    LEFT JOIN LATERAL (
+      SELECT i.status FROM mirror.import i WHERE i.registry_row_id=r.row_id
+        AND (snapshot_at IS NULL OR (i.status='accepted' AND i.accepted_at<=snapshot_at))
+      ORDER BY CASE WHEN snapshot_at IS NULL THEN i.import_id END DESC,
+               i.accepted_at DESC,i.import_id DESC LIMIT 1
+    ) latest ON true
+    WHERE latest.status IS DISTINCT FROM 'accepted';
+    IF unresolved_layers IS NOT NULL THEN
+      RAISE EXCEPTION 'Required Berlin sources are not ready: %',unresolved_layers
+        USING HINT='For a current build, register active row sources and resolve their latest imports in mirror.import using mirror.store_layer, mirror.accept_layer or mirror.reject_layer as appropriate. Historical builds require an accepted import at or before snapshot_at.';
+    END IF;
+    -- Resolve once after waiting for publication/build locks; explicit times stay unchanged.
+    snapshot_at:=coalesce(snapshot_at,clock_timestamp());
+    CALL curation.curate_berlin_city_20261101(snapshot_at,region);
+    CALL curation.curate_berlin_district_20261101(snapshot_at,region);
+    CALL curation.curate_berlin_block_20261101(snapshot_at,region);
+    CALL curation.curate_berlin_plot_20261101(snapshot_at,region);
+    CALL curation.curate_berlin_building_20261101(snapshot_at,region);
+    CALL curation.curate_berlin_address_20261101(snapshot_at,region);
+    CALL curation.curate_berlin_relations_20261101();
+    -- Keep output object identities stable for dependent queries and constraints.
+    -- DELETE/INSERT is MVCC-safe for readers; all replacements commit together.
+    LOCK TABLE curation.berlin_city,curation.berlin_district,curation.berlin_block,
+      curation.berlin_plot,curation.berlin_building,curation.berlin_address,
+      curation.berlin_relation_building_block,curation.berlin_relation_building_plot,curation.berlin_relation_plot_block,
+      curation.dataset_build IN EXCLUSIVE MODE;
+    DELETE FROM curation.berlin_relation_building_block;
+    DELETE FROM curation.berlin_relation_building_plot;
+    DELETE FROM curation.berlin_relation_plot_block;
+    FOREACH entity IN ARRAY ARRAY['city','district','block','plot','building','address',
+      'relation_building_block','relation_building_plot','relation_plot_block'] LOOP
+      output_name:='berlin_'||entity;
+      SELECT string_agg(quote_ident(attname),',' ORDER BY attnum) INTO columns_sql
+        FROM pg_attribute WHERE attrelid=to_regclass('curation.'||output_name)
+          AND attnum>0 AND NOT attisdropped;
+      EXECUTE format('DELETE FROM curation.%I',output_name);
+      EXECUTE format('INSERT INTO curation.%I (%s) OVERRIDING SYSTEM VALUE SELECT %s FROM pg_temp.%I',
+        output_name,columns_sql,columns_sql,output_name||'_working');
+      EXECUTE format('ANALYZE curation.%I',output_name);
+    END LOOP;
+    INSERT INTO curation.dataset_build(dataset_name,recipe_name,git_revision,mirror_snapshot,region,completed_at)
+      VALUES('berlin','curation.curate_berlin_20261101',git_revision,snapshot_at,region,clock_timestamp())
+      ON CONFLICT(dataset_name) DO UPDATE SET recipe_name=excluded.recipe_name,
+        git_revision=excluded.git_revision,mirror_snapshot=excluded.mirror_snapshot,
+        region=excluded.region,completed_at=excluded.completed_at;
+END;
+$$;
+COMMENT ON PROCEDURE curation.curate_berlin_20261101(timestamptz,public.geometry,text) IS 'Pipeline/DBA entry point: reconstructs six Berlin entity tables and three n:m relationship tables from one accepted mirror snapshot, then installs all results and the current dataset_build row in one caller transaction. Uses indexed temporary tables; failure preserves the previous complete dataset. No internal commits, publication interface or curated history. NULL region selects full scope; explicit regions must use source-compatible CRS. Git revision is caller-supplied and nullable. Omitted or NULL snapshot_at selects one current mirror time after locking and requires active sources with accepted latest imports; explicit timestamps reconstruct accepted history independently of later import failures or retirement. Missing inputs raise exceptions with recovery hints. Standalone CALL is atomic; an explicit outer transaction controls commit when supplied. Example: CALL curation.curate_berlin_20261101(); Historical example: CALL curation.curate_berlin_20261101(snapshot_at=>''2026-11-01 00:00:00+00'');';

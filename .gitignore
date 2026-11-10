@@ -3,17 +3,23 @@
 .env.*
 !.env.example
 
+# VS Code enabled Dev Container configuration.
+/.devcontainer/
+
 # Persistent service state and original datasets.
 data/
 /uttdb/source-files/
 
-# Windows desktop metadata and editor temporary files.
+# Local test suites; keep the privilege contract reviewable.
+tests/*
+!tests/privileges.sql
+
+# Windows OS and macOS files.
 Thumbs.db
 Desktop.ini
 *~
 *.swp
 *.swo
 
-# Local data model review and legacy reference.
-/docs/datamodel_naming.csv
+# Local legacy reference and temporary working files.
 /example/legacy_energymap_berlin_structure.sql

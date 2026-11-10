@@ -6,7 +6,7 @@
       "Host": "uttdb",
       "Port": 5432,
       "MaintenanceDB": "uttdb",
-      "Username": "uttadmin",
+      "Username": "postgres",
       "SSLMode": "prefer"
     }
   }
