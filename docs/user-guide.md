@@ -406,6 +406,107 @@ it does not close object ranges. Referenced registrations must not be deleted or
 repurposed. A row-source identity remains registered even after retirement. Native
 files additionally support a new registration after retirement, as described below.
 
+### Scheduling refresh with pg_cron
+
+The database image includes pg_cron 1.6.8. Compose preloads it and selects the
+configured UTT database for its catalogue from the first server startup; fresh
+initialization creates the extension in that database. It installs no jobs. Background-worker execution requires no
+scheduler password and makes no changes to database authentication. Compose limits
+concurrent jobs to two and uses UTC schedules; they share PostgreSQL's worker budget
+with other database features. Superuser jobs are disabled: connect as your individual
+nonsuperuser administrator login to manage and execute jobs.
+
+To opt into a daily refresh at 03:00 UTC, run as that administrator:
+
+```sql
+SELECT cron.schedule('mirror-daily-refresh', '0 3 * * *',
+                     'CALL mirror.update_registered_sources();');
+SELECT * FROM mirror.scheduled_jobs ORDER BY jobid;
+```
+
+The scheduled command must be that single top-level `CALL`: do not prepend `SET`,
+wrap it in `BEGIN/COMMIT` or combine it with other statements. The refresh procedure
+commits datasets internally. Its existing skip/review/failure behavior still applies;
+a successful scheduler run is not proof that every source was accepted. Check
+`mirror.import` as well. Each job executes with its scheduling login's permissions;
+deactivation or removal of those permissions can stop later runs. Schedule under
+your individual login, not `SET ROLE utt_admin` (the group role cannot log in).
+
+Both administrators and developers can query `mirror.scheduled_jobs`. It is an
+ordinary, deliberately non-updatable view of this database's job configuration,
+including SQL text and execution login. Re-run SELECT or refresh pgAdmin's query
+results to see changes; no synchronization writes are needed. Do not embed credentials
+in job commands. Developers cannot schedule, alter or remove jobs. Administrators
+can see the shared configuration, but standard mutation functions still apply their
+job-ownership rules; shared visibility does not authorize editing another login's jobs.
+
+Inspect your own execution history and change or stop your job through standard APIs:
+
+```sql
+SELECT jobid, status, return_message, start_time, end_time
+FROM cron.job_run_details ORDER BY start_time DESC LIMIT 20;
+
+SELECT cron.alter_job(jobid, schedule => '0 4 * * *')
+FROM cron.job WHERE jobname='mirror-daily-refresh' AND username=current_user;
+
+SELECT cron.alter_job(jobid, active => false)
+FROM cron.job WHERE jobname='mirror-daily-refresh' AND username=current_user;
+-- Enable again by passing active => true. Disable before removing a running job.
+SELECT cron.unschedule('mirror-daily-refresh');
+```
+
+Disabling prevents subsequent launches; it is not a guarantee that an already running
+command has stopped. Unscheduling removes the definition, not its run history or
+committed database effects. History is subject to pg_cron's per-owner row policy;
+the bootstrap DBA can inspect all runs. There is no automatic history-retention job.
+The bootstrap DBA can explicitly prune `cron.job_run_details` according to deployment
+retention requirements. All these are upstream pg_cron interfaces, not UTT wrappers.
+
+Check startup and configuration with:
+
+```sql
+SHOW shared_preload_libraries;
+SHOW cron.database_name;
+SHOW cron.use_background_workers;
+SHOW cron.max_running_jobs;
+SELECT extversion FROM pg_extension WHERE extname='pg_cron';
+```
+
+The image pins source release 1.6.8; pg_cron reports its SQL extension version as
+`1.6` in `pg_extension`, which does not include the source patch number.
+
+The preload list and scheduler settings live in Compose's `postgres -c` arguments.
+The pinned upstream image requires no additional preload libraries. If another
+preload-dependent extension is added, extend the explicit list in Compose; the list
+overrides any `shared_preload_libraries` value in PostgreSQL configuration files.
+Other file-based settings are unaffected unless explicitly overridden by a startup
+argument. The upstream entrypoint forwards these options to both its temporary
+socket-only initialization server and the final server, so no extra restart or
+`ALTER SYSTEM` configuration is needed. `900-utt-init.sh` only loads UTT init files.
+
+`cron.database_name` uses the same `.env` value and Compose fallback as `POSTGRES_DB`.
+Keep the database name consistent for an initialized instance: changing `.env` does
+not rename or create an existing database. Recreate the container to apply changed
+Compose startup arguments; simply restarting an existing container does not update
+its command. Editing init files does not install the extension into existing state.
+This integration targets fresh deployment and contains no live-database migration.
+
+For a no-network smoke test, use an **empty disposable initialized UTTDB**, connect
+psql as its bootstrap DBA through standard `PGHOST`, `PGPORT`, `PGDATABASE`, `PGUSER`
+and authentication settings, then run from the repository root:
+
+```sh
+python3 tests/pg-cron-smoke.py --disposable
+```
+
+It commits fixtures across sessions, schedules short-lived jobs under a nonsuperuser
+administrator, verifies internal COMMIT and a real refresh of a local SQL fixture,
+checks developer visibility/denied writes, and removes its jobs and fixtures.
+It refuses a database containing registrations or jobs. It is not a rollback-only
+suite and must not run against a research instance. A container build, fresh startup,
+this test and a restart/configuration check are required before staging deployment;
+source inspection alone does not establish deployment readiness.
+
 ## Local vector files and GeoTIFFs
 
 Place original files below `uttdb/source-files/` before registering them. Compose

@@ -36,10 +36,27 @@ RUN set -eux; \
     rm -rf /tmp/pgsql-http /tmp/pgsql-http.tar.gz; \
     test -f "$(pg_config --sharedir)/extension/http.control"
 
+# pg_cron v1.6.8, built against the upstream PostgreSQL installation (PG18).
+ARG PG_CRON_COMMIT=5cedfa472ccc83567aa23ec645925ed8489a7797
+RUN set -eux; \
+    apk add --no-cache --virtual .pg-cron-builddeps build-base curl; \
+    mkdir -p /tmp/pg-cron; \
+    curl --fail --location --retry 3 \
+      "https://codeload.github.com/citusdata/pg_cron/tar.gz/${PG_CRON_COMMIT}" \
+      -o /tmp/pg-cron.tar.gz; \
+    tar -xzf /tmp/pg-cron.tar.gz --strip-components=1 -C /tmp/pg-cron; \
+    make -C /tmp/pg-cron with_llvm=no; \
+    make -C /tmp/pg-cron with_llvm=no install; \
+    apk del .pg-cron-builddeps; \
+    rm -rf /tmp/pg-cron /tmp/pg-cron.tar.gz; \
+    test -f "$(pg_config --sharedir)/extension/pg_cron.control"; \
+    test -f "$(pg_config --pkglibdir)/pg_cron.so"
+
 # Keep upstream initialization scripts and run the mounted UTT folder after them.
 # Non-executable so PostgreSQL sources the hook with its init helpers available.
 COPY --chmod=644 900-utt-init.sh /docker-entrypoint-initdb.d/900-utt-init.sh
 
 LABEL org.opencontainers.image.title="UrbanTwin-Toolbox Database" \
       org.opencontainers.image.description="UTTDB image based on 3DCityDB, with PostgreSQL/PostGIS and foreign data wrappers." \
-      utt.ogr-fdw.version="1.1.9"
+      utt.ogr-fdw.version="1.1.9" \
+      utt.pg-cron.version="1.6.8"

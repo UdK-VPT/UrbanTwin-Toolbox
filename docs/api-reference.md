@@ -520,6 +520,27 @@ The required `(source_name, layer_name)` pairs are `berlin_alkis/alkis:land`,
 `relation_building_block`, `relation_building_plot` and `relation_plot_block`. All belong to
 `curation` and are queried directly.
 
+## Shared scheduler visibility
+
+`mirror.scheduled_jobs` is an ordinary read-only view for `utt_admin` and
+`utt_developer`, with columns `jobid bigint`, `jobname name`, `schedule text`,
+`command text`, `database text`, `username text` and `active boolean`. It projects
+pg_cron's job catalogue for the current database, across job owners. It does not
+cache results or expose write access. Example:
+
+```sql
+SELECT * FROM mirror.scheduled_jobs ORDER BY jobid;
+```
+
+Administrators manage their own jobs using upstream `cron.schedule`, `cron.alter_job`
+and `cron.unschedule`; developers receive no scheduler execution privileges. Visibility
+does not override upstream mutation/identity checks. The cron extension and its tables
+retain bootstrap ownership. There are no UTT scheduler functions or configuration tables;
+see the [scheduling workflow](user-guide.md#scheduling-refresh-with-pg_cron) for practical
+calls, worker configuration and the disposable smoke test. Job SQL is shared information
+through the view; never include credentials. Run history remains in the upstream
+`cron.job_run_details` table under its per-owner policy.
+
 ## Internal routines for maintainers
 
 These are implementation boundaries, not a second public workflow. Administrators normally execute
