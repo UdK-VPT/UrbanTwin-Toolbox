@@ -163,7 +163,7 @@ PostgreSQL so the team can understand, discuss and maintain them together.
 
 - `compose.yml` runs UTTDB and pgAdmin. UTTDB uses the locally built
   `utt/database:local` image from `custom-db-docker-image/`, based on 3DCityDB v5.
-  The image provides `ogr_fdw`, `postgres_fdw`, `http` and PostGIS Raster.
+  The image provides `ogr_fdw`, `postgres_fdw`, `http`, PostGIS Raster and `pg_cron`.
 - Upstream database and pgAdmin images are pinned by digest. Keep the Compose database
   digest synchronized with the Dockerfile default when updating it.
 - On a fresh database, `900-utt-init.sh` processes `uttdb/init/` in filename order
@@ -176,6 +176,17 @@ PostgreSQL so the team can understand, discuss and maintain them together.
   Original datasets belong in `uttdb/source-files/`, mounted read-only at
   `/source-files`, and require separate backups.
 - Use LF for text and shell/PowerShell scripts; Windows batch files use CRLF.
+
+- Keep scheduling in pg_cron with no default jobs, UTT scheduling tables or wrappers.
+  Use background workers without weakening authentication. Keep scheduler grants and
+  SELECT-only catalogue visibility policy in 902, extension ownership with bootstrap,
+  and `mirror.scheduled_jobs` as a live, non-updatable shared view. Developers only read;
+  administrator job mutation retains upstream owner checks. Fresh initialization must
+  use Compose startup arguments for an explicit complete preload list and scheduler
+  settings, including the same database value as POSTGRES_DB. Preserve unrelated settings;
+  extend the preload list when adding extensions. Keep 900 as an init-file loader,
+  without scheduler configuration writes or extra restarts. Test scheduled top-level
+  COMMIT behavior only in an empty disposable DB.
 
 ## Documentation rules
 

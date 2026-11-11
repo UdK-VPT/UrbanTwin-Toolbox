@@ -25,7 +25,9 @@ The Compose stack runs UTTDB and pgAdmin. UTT registers WFS and local vector lay
 ingests accepted row history, tiles self-contained GeoTIFFs into PostGIS Raster,
 and tracks native-file reference versions without converting their payloads.
 It supports review thresholds, manual acceptance/rejection, source refresh,
-retirement, individual administrator accounts and developer sandboxes.
+retirement, individual administrator accounts and developer sandboxes. Included pg_cron
+provides opt-in database scheduling with shared read-only job visibility; no jobs are
+created by default.
 
 Optional Berlin curation builds six entity tables and three spatial relationship
 tables from one accepted mirror snapshot. It is a project-specific demonstration,

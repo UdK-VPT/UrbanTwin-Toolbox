@@ -25,6 +25,23 @@ GRANT SET ON PARAMETER "postgis.gdal_enabled_drivers" TO utt_admin;
 COMMENT ON ROLE utt_admin IS 'Trusted UTT administrators; shared object owner. Individual logins remain identifiable as session_user.';
 COMMENT ON ROLE utt_developer IS 'Researchers and developers: shared reads and individually owned sandboxes.';
 
+-- Scheduler configuration uses upstream functions, never table writes. Jobs run
+-- as individual administrator logins; the bootstrap superuser cannot schedule.
+-- Retain upstream extension ownership, RLS and per-owner mutation checks.
+REVOKE ALL ON SCHEMA cron FROM PUBLIC, utt_developer;
+REVOKE ALL ON ALL TABLES IN SCHEMA cron FROM PUBLIC, utt_developer;
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA cron FROM PUBLIC, utt_developer;
+REVOKE EXECUTE ON ALL ROUTINES IN SCHEMA cron FROM PUBLIC, utt_developer;
+GRANT USAGE ON SCHEMA cron TO utt_admin;
+GRANT SELECT ON cron.job, cron.job_run_details TO utt_admin;
+GRANT EXECUTE ON FUNCTION cron.schedule(text,text), cron.schedule(text,text,text),
+  cron.alter_job(bigint,text,text,text,text,boolean),
+  cron.unschedule(bigint), cron.unschedule(text) TO utt_admin;
+-- SELECT-only policy lets the utt_admin-owned mirror view see all jobs. This
+-- grants no UPDATE/INSERT/DELETE rights and does not change API ownership checks.
+CREATE POLICY utt_admin_job_visibility ON cron.job
+  FOR SELECT TO utt_admin USING (true);
+
 -- A single narrowly scoped DDL boundary makes ownership/defaults independent of
 -- which administrator executes DDL. It also covers the optional curation schema.
 CREATE OR REPLACE FUNCTION utt_pkg.apply_shared_privileges()

@@ -10,9 +10,8 @@
 data/
 /uttdb/source-files/
 
-# Local test suites; keep the privilege contract reviewable.
-tests/*
-!tests/privileges.sql
+# Local test suites.
+/tests/
 
 # Windows OS and macOS files.
 Thumbs.db

@@ -1057,3 +1057,13 @@ BEGIN
 END;
 $$;
 COMMENT ON PROCEDURE mirror.update_registered_sources(boolean,text,interval) IS 'DBA top-level batch, outside BEGIN/COMMIT: refreshes active row/file registrations in stable order, committing each dataset independently. Skips pending staging and recently accepted imports; skip_interval NULL disables freshness skip. Refreshes WFS advertised revisions separately from accepted evidence. Failed source reads persist failed attempts; earlier commits survive later errors. Returns no result. Example: CALL mirror.update_registered_sources(review=>true,skip_interval=>NULL);';
+
+-- One live catalogue projection, not a scheduler configuration copy. OFFSET 0
+-- deliberately makes this ordinary owner-rights view non-updatable. Its owner
+-- utt_admin has SELECT through the policy in 902; developers need no cron access.
+CREATE VIEW mirror.scheduled_jobs WITH (security_barrier=true) AS
+SELECT jobid, jobname, schedule, command, database, username, active
+FROM cron.job
+WHERE database = current_database()
+OFFSET 0;
+COMMENT ON VIEW mirror.scheduled_jobs IS 'Read-only live job configuration for this UTT database, visible to administrators and developers. Re-query to see scheduling changes; no refresh/synchronization writes. Includes SQL commands: never embed credentials in job text. Administrators configure their own jobs with standard cron.schedule/alter_job/unschedule functions; this view grants no job execution or configuration rights. Example: SELECT * FROM mirror.scheduled_jobs ORDER BY jobid;';

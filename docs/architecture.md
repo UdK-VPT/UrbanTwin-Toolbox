@@ -19,6 +19,7 @@ and interoperability; UTT supplies the shared registration/acceptance convention
 - [Berlin model and spatial relationships](#berlin-model-and-spatial-relationships)
 - [Privilege architecture](#privilege-architecture)
 - [Maintenance responsibilities and integrity](#maintenance-responsibilities-and-integrity)
+- [Database scheduling](#database-scheduling)
 - [Raster limitations](#raster-limitations)
 - [Persistence, scope and limitations](#persistence-scope-and-limitations)
 - [Inspecting installed objects](#inspecting-installed-objects)
@@ -308,6 +309,42 @@ are integrity boundaries rather than an audit system against malicious DBAs.
 | `protect_source_columns`, `protect_source_columns_truncate` / `mirror.source_columns` | `protect_metadata` | Preserve immutable definitions and prevent truncation. |
 | `protect_registry`, `protect_registry_truncate` / `mirror.registry` | `protect_metadata` | Preserve referenced identity, accepted native-file evidence and accepted key/scope contracts; permit controlled closure, summaries and retirement. |
 | `protect_history`, `protect_history_truncate` / each `_stored` table | `protect_history` | Check creating accepted-import ownership; reject deletion/state rewrites/truncation while permitting current-range closure. |
+
+## Database scheduling
+
+The image builds commit-pinned pg_cron 1.6.8 against its PostgreSQL headers. Compose
+sets `shared_preload_libraries=pg_cron` and derives `cron.database_name` from the same
+configuration value as `POSTGRES_DB`. Inspection of the pinned upstream image's
+startup scripts and build history found no additional required preloads. The explicit
+Compose list must be extended when adding another preload-dependent extension; it
+takes precedence over the file-based value without replacing unrelated configuration.
+The upstream entrypoint forwards the arguments to both the temporary socket-only
+initialization server and the final server. The 900 hook only loads UTT init files;
+901 creates the extension without an extra server restart or ALTER SYSTEM writes.
+Compose also configures UTC, background workers, at most two concurrent jobs and no
+superuser jobs. The default PostgreSQL worker budget is retained; other worker
+consumers must be considered when tuning it.
+No scheduler service, password, authentication change or default job is introduced.
+
+The extension retains bootstrap ownership of its `cron` schema, tables and routines.
+902 grants scheduling functions to `utt_admin` without granting direct catalogue
+writes. Upstream job-owner checks remain in force. A SELECT-only RLS policy lets
+`utt_admin` read all job definitions. `mirror.scheduled_jobs` is an owner-rights,
+security-barrier view filtered to the current database; OFFSET 0 deliberately prevents
+automatic view updates. The shared DDL policy assigns `utt_admin` ownership and gives
+developers SELECT. No developer access to the cron schema/functions is needed.
+The view includes command text and execution identity; it stores no duplicate rows
+and adds no metadata table. The four-table UTT provenance/build inventory is unchanged;
+pg_cron's own job and run-detail tables are extension-managed scheduler objects.
+
+The job owner remains the execution login, not the viewer. Shared visibility does
+not imply shared mutation rights or the ability to choose a different execution role.
+Run details retain upstream per-owner visibility, with bootstrap DBA access for
+cross-owner inspection/retention. The build adds no UTT scheduler routines or tables.
+A refresh must be scheduled as a single top-level CALL so its per-dataset COMMITs
+remain legal in the background worker. The disposable smoke test covers this with
+both an explicit two-transaction procedure and the actual mirror batch over a local
+fixture, without external reads. Test jobs and fixtures are explicitly cleaned up.
 
 ## Raster limitations
 
