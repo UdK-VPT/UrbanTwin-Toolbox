@@ -3,6 +3,10 @@
 .env.*
 !.env.example
 
+# Repository-local PostgreSQL connection settings and credentials.
+/.pg_service.conf
+/.pgpass
+
 # VS Code enabled Dev Container configuration.
 /.devcontainer/
 
